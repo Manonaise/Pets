@@ -1,0 +1,28 @@
+# Pets plugin config
+loot:
+  base-minutes: 30
+wash:
+  xp: 20
+walk:
+  xp-per-block: 1
+feed:
+  xp: 10
+drink:
+  xp: 10
+whistle:
+  range-teleport: 5
+follow:
+  max-range: 40
+  teleport-range: 15
+hourly:
+  base-amount: 25
+  command: "eco give %player% %amount%"
+basket:
+  mode: ENTITY
+  itemsadder_id: "master_bedroom_furniture_v1:basket"
+
+
+menu:
+  itemsadder_id: "master_bedroom_furniture_v1:basket"
+
+

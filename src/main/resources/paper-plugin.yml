@@ -1,0 +1,31 @@
+name: Pets
+version: 1.0.0
+main: org.Manonaise.pets.Pets
+description: Pets plugin
+api-version: '1.21'
+
+softdepend: [ItemsAdder]
+
+# (We gebruiken Paper's registerCommand in code; dit blok mag blijven of weg)
+commands:
+  pet:
+    description: Pets hoofdcommand
+    usage: /pet
+    aliases: [pets]
+
+permissions:
+  pet.command.give:
+    default: op
+  pet.command.remove:
+    default: op
+  pet.command.menu:
+    default: false   # ← eerder true; nu uitzetten
+  pet.command.menu.bypass:
+    default: op      # ← staff/bypass
+  pet.command.items.menu:
+    default: true
+  pet.command.whistle:
+    default: true
+  pet.command.givefood:
+    default: op
+
