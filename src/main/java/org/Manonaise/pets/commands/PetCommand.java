@@ -24,6 +24,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 public class PetCommand implements BasicCommand {
+
     private final Pets plugin;
     public PetCommand(Pets plugin){ this.plugin = plugin; }
 
@@ -53,11 +54,15 @@ public class PetCommand implements BasicCommand {
     private void handleGive(CommandSender sender, String[] args) {
         if (!sender.hasPermission("pet.command.give")) { sender.sendMessage(ChatColor.RED+"Geen permissie."); return; }
 
-        // ✅ Nieuwe syntax voor mythic:
-        // /pet give <speler> mythic <MythicMobId> <naam...>
-        // /pet give <speler> <type> <naam...> [CAT-variant]
+        // MYTHIC: /pet give <speler> mythic <MobId> <naam...>
+        if (args.length >= 5 && args[2].equalsIgnoreCase("mythic")) {
+            giveMythic(sender, args);
+            return;
+        }
+
+        // VANILLA: /pet give <speler> <type> <naam...> [CAT-variant]
         if (args.length < 4) {
-            sender.sendMessage(ChatColor.RED+"/pet give <speler> <type|mythic> <naam...>");
+            sender.sendMessage(ChatColor.RED+"/pet give <speler> <soortdier> <naam...> [CAT-variant]");
             sender.sendMessage(ChatColor.RED+"/pet give <speler> mythic <MythicMobId> <naam...>");
             return;
         }
@@ -65,49 +70,18 @@ public class PetCommand implements BasicCommand {
         Player target = Bukkit.getPlayerExact(args[1]);
         if (target == null) { sender.sendMessage(ChatColor.RED+"Speler niet online."); return; }
 
-        PetType type;
-        String mythicId = null;
-
-        // ✅ 1) Expliciet "mythic" keyword
-        if (args[2].equalsIgnoreCase("mythic")) {
-            if (args.length < 5) {
-                sender.sendMessage(ChatColor.RED+"Gebruik: /pet give <speler> mythic <MythicMobId> <naam...>");
-                return;
-            }
-            type = PetType.MYTHIC;
-            mythicId = args[3];
-
-            // naam is alles vanaf args[4]
-            String name = ChatColor.translateAlternateColorCodes('&',
-                    String.join(" ", Arrays.copyOfRange(args, 4, args.length)));
-
-            givePet(sender, target, type, name, null, mythicId);
+        PetType type = PetType.from(args[2]);
+        if (type == null || type == PetType.MYTHIC) {
+            sender.sendMessage(ChatColor.RED+"Onbekend dier. Opties: "+
+                    Arrays.stream(PetType.values()).map(PetType::name).collect(Collectors.joining(", ")));
             return;
         }
 
-        // ✅ 2) Normale types (wolf/cat/...)
-        type = PetType.from(args[2]);
-
-        // ✅ 3) Backwards-compatible: als type onbekend → behandel args[2] als mythicMobId
-        // Dan werkt ook: /pet give <speler> Nocsy_Cat-Munchkin <naam...>
-        if (type == null) {
-            type = PetType.MYTHIC;
-            mythicId = args[2];
-
-            String name = ChatColor.translateAlternateColorCodes('&',
-                    String.join(" ", Arrays.copyOfRange(args, 3, args.length)));
-
-            givePet(sender, target, type, name, null, mythicId);
-            return;
-        }
-
-        // Vanaf hier: vanilla pet type
         List<String> tail = new ArrayList<>(Arrays.asList(args).subList(3, args.length));
         if (tail.isEmpty()) { sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven."); return; }
 
         String variant = null;
 
-        // CAT variant als laatste arg
         if (type == PetType.CAT && !tail.isEmpty()) {
             String last = tail.get(tail.size() - 1);
             if (isCatVariant(last)) {
@@ -116,41 +90,47 @@ public class PetCommand implements BasicCommand {
             }
         }
 
-        if (tail.isEmpty()) {
-            sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven (voor variant).");
-            return;
-        }
+        if (tail.isEmpty()) { sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven."); return; }
 
         String name = ChatColor.translateAlternateColorCodes('&', String.join(" ", tail));
-        givePet(sender, target, type, name, variant, null);
-    }
-
-    private void givePet(CommandSender sender, Player target, PetType type, String name, String variant, String mythicId) {
-        // MythicMobs check
-        if (type == PetType.MYTHIC) {
-            if (plugin.getMythicMobsHook() == null || !plugin.getMythicMobsHook().isAvailable()) {
-                sender.sendMessage(ChatColor.RED + "MythicMobs is niet aanwezig, dus Mythic pets kunnen niet.");
-                return;
-            }
-            if (mythicId == null || mythicId.isBlank()) {
-                sender.sendMessage(ChatColor.RED + "MythicMobId is leeg.");
-                return;
-            }
-        }
 
         Pet pet = plugin.getPetManager().createPet(target.getUniqueId(), type, name);
         if (variant != null) pet.setVariant(variant);
-        if (mythicId != null) pet.setMythicMobId(mythicId);
-
         plugin.getPetManager().save();
 
         sender.sendMessage(ChatColor.GREEN + "Pet gegeven: " + name + " (#" + pet.getId() + ") aan " + target.getName()
-                + (variant != null ? ChatColor.GRAY + " [CAT variant: " + variant + "]" : "")
-                + (mythicId != null ? ChatColor.DARK_AQUA + " [Mythic: " + mythicId + "]" : "")
+                + (variant!=null ? ChatColor.GRAY+" [CAT variant: "+variant+"]" : ""));
+        target.sendMessage(ChatColor.GREEN + "Je kreeg een nieuwe pet: " + name + "!");
+    }
+
+    private void giveMythic(CommandSender sender, String[] args) {
+        Player target = Bukkit.getPlayerExact(args[1]);
+        if (target == null) { sender.sendMessage(ChatColor.RED+"Speler niet online."); return; }
+
+        String mobId = args[3]; // bv. Nocsy_Cat-Munchkin
+        String name = ChatColor.translateAlternateColorCodes('&',
+                String.join(" ", Arrays.asList(args).subList(4, args.length))
         );
 
-        // Optioneel: meteen spawnen
+        if (name.isBlank()) { sender.sendMessage(ChatColor.RED+"Geef een naam op."); return; }
+
+        // hook check
+        if (plugin.getMythicMobsHook() == null || !plugin.getMythicMobsHook().isAvailable()) {
+            sender.sendMessage(ChatColor.RED+"MythicMobs is niet aanwezig, mythic pets kunnen niet.");
+            return;
+        }
+
+        Pet pet = plugin.getPetManager().createPet(target.getUniqueId(), PetType.MYTHIC, name);
+        pet.setMythicMobId(mobId);
+        plugin.getPetManager().save();
+
+        // spawn direct
         plugin.getPetManager().spawn(target, pet);
+
+        sender.sendMessage(ChatColor.GREEN + "Mythic pet gegeven: " + name + " (#" + pet.getId() + ")"
+                + ChatColor.DARK_AQUA + " [MobId: " + mobId + "]"
+                + ChatColor.GREEN + " aan " + target.getName());
+        target.sendMessage(ChatColor.GREEN + "Je kreeg een nieuwe pet: " + name + "!");
     }
 
     private boolean isCatVariant(String v){
@@ -191,14 +171,18 @@ public class PetCommand implements BasicCommand {
             }
         } catch (Throwable ignored) {}
 
-        boolean holdingIaItem = false; // optioneel
-
-        if (!bypass && !allowedByToken && !holdingIaItem) {
+        if (!bypass && !allowedByToken) {
             p.sendMessage(ChatColor.RED + "Je kunt dit menu alleen openen via een dierenmand-blok of speciale permissie.");
             return;
         }
 
-        new PetMenu(plugin, p).open(p);
+        Player target;
+        if (args.length >= 2 && sender.hasPermission("pet.command.give")) {
+            target = Bukkit.getPlayerExact(args[1]);
+            if (target == null) { sender.sendMessage(ChatColor.RED+"Speler niet online."); return; }
+        } else target = p;
+
+        new PetMenu(plugin, target).open(target);
     }
 
     /* ============================ /pet items menu ============================ */
@@ -295,20 +279,27 @@ public class PetCommand implements BasicCommand {
 
     @Override
     public Collection<String> suggest(CommandSourceStack source, String[] args) {
-        if (args.length == 0)
-            return List.of("give","remove","menu","items","whistle","givefood","basket");
-        if (args.length == 1)
-            return filter(List.of("give","remove","menu","items","whistle","givefood","basket"), args[0]);
+        if (args.length == 0) return List.of("give","remove","menu","items","whistle","givefood","basket");
+        if (args.length == 1) return filter(List.of("give","remove","menu","items","whistle","givefood","basket"), args[0]);
 
         if (args[0].equalsIgnoreCase("give")) {
             if (args.length == 2) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
-            if (args.length == 3) {
-                // ✅ voeg "mythic" toe
-                List<String> base = new ArrayList<>();
-                base.add("mythic");
-                base.addAll(Arrays.stream(PetType.values()).map(PetType::name).toList());
-                return base;
-            }
+            if (args.length == 3) return Arrays.stream(PetType.values()).map(PetType::name).toList();
+        }
+
+        if (args[0].equalsIgnoreCase("menu") && args.length == 2)
+            return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
+
+        if (args[0].equalsIgnoreCase("items") && args.length == 2)
+            return filter(List.of("menu"), args[1]);
+
+        if (args[0].equalsIgnoreCase("givefood")) {
+            if (args.length == 2) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
+            if (args.length == 3) return List.of("1","8","16","32","64");
+        }
+
+        if (args[0].equalsIgnoreCase("basket") && args.length == 2) {
+            return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
         }
 
         return List.of();

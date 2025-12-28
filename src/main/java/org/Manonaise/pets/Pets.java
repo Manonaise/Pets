@@ -11,8 +11,10 @@ import org.Manonaise.pets.items.ItemsManager;
 import org.Manonaise.pets.listeners.*;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
-import org.bukkit.plugin.Plugin; // ✅ nieuw
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
+
+import java.util.List;
 
 public final class Pets extends JavaPlugin {
 
@@ -21,6 +23,7 @@ public final class Pets extends JavaPlugin {
     private PetManager petManager;
     private ItemsManager itemsManager;
 
+    // Hooks
     private AuraSkillsHook auraSkillsHook;
     private MythicMobsHook mythicMobsHook;
 
@@ -45,11 +48,13 @@ public final class Pets extends JavaPlugin {
         this.itemsManager = new ItemsManager(this);
         this.petManager = new PetManager(this);
 
+        // AuraSkills is hard depend bij jou
         if (Bukkit.getPluginManager().getPlugin("AuraSkills") == null) {
             throw new RuntimeException("AuraSkills is verplicht (depend), maar werd niet gevonden.");
         }
         this.auraSkillsHook = new AuraSkillsHook(this);
 
+        // MythicMobs softdepend
         if (Bukkit.getPluginManager().getPlugin("MythicMobs") != null) {
             this.mythicMobsHook = new MythicMobsHook(this);
             getLogger().info("MythicMobs gevonden -> Mythic pets enabled.");
@@ -60,6 +65,7 @@ public final class Pets extends JavaPlugin {
 
         registerCommands();
 
+        // Listeners
         Bukkit.getPluginManager().registerEvents(new InteractionListener(this), this);
         Bukkit.getPluginManager().registerEvents(new InventoryListener(this), this);
         Bukkit.getPluginManager().registerEvents(new QuitListener(this), this);
@@ -77,16 +83,15 @@ public final class Pets extends JavaPlugin {
     private void registerCommands() {
         final PetCommand petCommand = new PetCommand(this);
 
-        // ✅ JOUW API: LifecycleEventManager<Plugin>
+        // Let op: generics is <Plugin>, NIET <JavaPlugin>
         LifecycleEventManager<Plugin> mgr = this.getLifecycleManager();
-
         mgr.registerEventHandler(LifecycleEvents.COMMANDS, event -> {
             Commands commands = event.registrar();
 
             commands.register(
                     "pet",
                     "Pets hoofdcommand",
-                    java.util.List.of("pets"),
+                    List.of("pets"),
                     petCommand
             );
         });

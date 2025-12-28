@@ -22,8 +22,13 @@ public class ActivePet {
     private final Pet pet;
 
     private Entity entity;
+
+    // ✅ Mythic-proof nametag: los ArmorStand die we elke tick teleporteren
     private ArmorStand nameTag;
-    private int task = -1;
+
+    // ✅ 2 tasks: 1 tick voor nametag, 10 ticks voor de rest
+    private int nameTask = -1;
+    private int mainTask = -1;
 
     private long lootStartMs = System.currentTimeMillis();
     private boolean gaveUp = false;
@@ -33,10 +38,14 @@ public class ActivePet {
     private double walkAccum = 0.0;
 
     private int lastShownLevel = -1;
+    private String lastShownName = null;
 
-    // AuraSkills mining boost tracking
+    // AuraSkills mining boost tracking (optioneel)
     private int lastGrindLevel = -1;
     private double lastAppliedAmount = Double.NaN;
+
+    // ✅ reuse locatie object om GC-stotters te vermijden
+    private final Location tagLocCache = new Location(null, 0, 0, 0);
 
     public ActivePet(Pets plugin, Player owner, Pet pet) {
         this.plugin = plugin;
@@ -51,30 +60,55 @@ public class ActivePet {
 
         entity = pet.getType().spawn(safe, pet, owner);
 
-        entity.getPersistentDataContainer().set(Pets.key("pet-owner"), PersistentDataType.STRING, owner.getUniqueId().toString());
-        entity.getPersistentDataContainer().set(Pets.key("pet-id"), PersistentDataType.INTEGER, pet.getId());
+        entity.getPersistentDataContainer().set(
+                Pets.key("pet-owner"),
+                PersistentDataType.STRING,
+                owner.getUniqueId().toString()
+        );
+        entity.getPersistentDataContainer().set(
+                Pets.key("pet-id"),
+                PersistentDataType.INTEGER,
+                pet.getId()
+        );
 
-        // naam op entity (extra zekerheid)
+        // Mythic kan custom-name overschrijven, dus wij tonen onze naam via ArmorStand
         try {
-            entity.customName(petNameComponent());
-            entity.setCustomNameVisible(true);
+            entity.customName(Component.empty());
+            entity.setCustomNameVisible(false);
         } catch (Throwable ignored) {}
 
-        spawnNameTagPassenger();
+        ensureNameTag(true);
 
         lastLoc = entity.getLocation();
         walkAccum = 0;
 
-        // direct mining boost
+        // direct mining boost (optioneel)
         updateMiningBoost(true);
 
-        task = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
-            if (entity == null || entity.isDead() || !owner.isOnline()) {
+        // ✅ 1-tick nametag task (vloeiend)
+        nameTask = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
+            if (entity == null || !entity.isValid() || entity.isDead() || !owner.isOnline()) {
                 remove();
                 return;
             }
 
-            if (pet.getLevel() != lastShownLevel) {
+            ensureNameTag(false);
+
+            if (nameTag != null && nameTag.isValid() && !nameTag.isDead()) {
+                nameTag.teleport(computeNameTagLocation(entity));
+            }
+
+        }, 1L, 1L);
+
+        // ✅ 10-tick main task (logica)
+        mainTask = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
+            if (entity == null || !entity.isValid() || entity.isDead() || !owner.isOnline()) {
+                remove();
+                return;
+            }
+
+            // Alleen text updaten als nodig
+            if (pet.getLevel() != lastShownLevel || !safeEq(lastShownName, pet.getName())) {
                 updateNameTagText();
             }
 
@@ -106,43 +140,56 @@ public class ActivePet {
         }, 10L, 10L);
     }
 
-    private void spawnNameTagPassenger() {
-        if (nameTag != null && !nameTag.isDead()) nameTag.remove();
-        nameTag = null;
+    /* ===================== NAME TAG ===================== */
 
-        Location at = entity.getLocation().clone();
+    private void ensureNameTag(boolean forceText) {
+        if (entity == null) return;
 
-        nameTag = (ArmorStand) at.getWorld().spawn(at, ArmorStand.class, as -> {
-            as.setInvisible(true);
-            as.setMarker(true);
-            as.setGravity(false);
-            as.setSmall(true);
-            as.setBasePlate(false);
-            as.setInvulnerable(true);
-            as.setPersistent(false);
-            as.setCollidable(false);
-            as.customName(petNameComponent());
-            as.setCustomNameVisible(true);
-        });
+        if (nameTag == null || !nameTag.isValid() || nameTag.isDead()) {
+            spawnNameTag();
+            forceText = true;
+        }
 
-        try { entity.addPassenger(nameTag); } catch (Throwable ignored) {}
+        if (forceText) {
+            updateNameTagText();
+        }
+    }
 
-        lastShownLevel = pet.getLevel();
+    private void spawnNameTag() {
+        try {
+            Location at = computeNameTagLocation(entity);
+
+            nameTag = entity.getWorld().spawn(at, ArmorStand.class, as -> {
+                as.setInvisible(true);
+                as.setMarker(true);
+                as.setGravity(false);
+                as.setSmall(true);
+                as.setArms(false);
+                as.setBasePlate(false);
+                as.setInvulnerable(true);
+                as.setPersistent(false);
+                as.setCollidable(false);
+
+                as.customName(petNameComponent());
+                as.setCustomNameVisible(true);
+            });
+
+        } catch (Throwable t) {
+            nameTag = null;
+        }
     }
 
     private void updateNameTagText() {
-        try {
-            entity.customName(petNameComponent());
-            entity.setCustomNameVisible(true);
-        } catch (Throwable ignored) {}
-
-        if (nameTag == null || nameTag.isDead()) {
-            spawnNameTagPassenger();
+        if (nameTag == null || nameTag.isDead() || !nameTag.isValid()) {
+            ensureNameTag(true);
             return;
         }
+
         nameTag.customName(petNameComponent());
         nameTag.setCustomNameVisible(true);
+
         lastShownLevel = pet.getLevel();
+        lastShownName = pet.getName();
     }
 
     private Component petNameComponent() {
@@ -150,11 +197,43 @@ public class ActivePet {
         return nm.append(Component.text(" §7(Lv." + pet.getLevel() + ")"));
     }
 
+    /**
+     * ✅ Automatische hoogte: bovenkant boundingbox + marge.
+     * Reused Location object om micro-stutters te voorkomen.
+     */
+    private Location computeNameTagLocation(Entity e) {
+        Location l = e.getLocation();
+        double topY;
+        try {
+            topY = e.getBoundingBox().getMaxY();
+        } catch (Throwable t) {
+            topY = l.getY() + Math.max(1.0, e.getHeight());
+        }
+
+        double extra = plugin.getConfig().getDouble("nametag.extra-y", 0.08);
+
+        tagLocCache.setWorld(l.getWorld());
+        tagLocCache.setX(l.getX());
+        tagLocCache.setY(topY + extra);
+        tagLocCache.setZ(l.getZ());
+        tagLocCache.setYaw(0f);
+        tagLocCache.setPitch(0f);
+        return tagLocCache;
+    }
+
+    private boolean safeEq(String a, String b) {
+        if (a == null && b == null) return true;
+        if (a == null || b == null) return false;
+        return a.equals(b);
+    }
+
+    /* ===================== AURASKILLS (OPTIONEEL) ===================== */
+
     private void updateMiningBoost(boolean force) {
         int g = pet.getUpGrinden();
 
-        double perLevel = plugin.getConfig().getDouble("grinden.auraskills-per-level", 0.01); // 1% per level
-        double cap = plugin.getConfig().getDouble("grinden.auraskills-cap", 0.10);            // max 10%
+        double perLevel = plugin.getConfig().getDouble("grinden.auraskills-per-level", 0.01);
+        double cap = plugin.getConfig().getDouble("grinden.auraskills-cap", 0.10);
 
         double amount = 0.0;
         if (g > 1) {
@@ -167,13 +246,13 @@ public class ActivePet {
         lastGrindLevel = g;
         lastAppliedAmount = amount;
 
-        // ✅ alleen via AuraSkills
         var hook = plugin.getAuraSkillsHook();
         if (hook != null) {
             hook.setMiningSpeedBonus(owner, pet, amount);
         }
-
     }
+
+    /* ===================== LOOT TIMER ===================== */
 
     public int elapsedMinutesSinceLoot() {
         return (int) ((System.currentTimeMillis() - lootStartMs) / 60000L);
@@ -182,6 +261,8 @@ public class ActivePet {
     public void resetLootTimer() {
         lootStartMs = System.currentTimeMillis();
     }
+
+    /* ===================== SPAWN HELPERS ===================== */
 
     private Location computeBaseSpawn(Location playerLoc) {
         Location l = playerLoc.clone();
@@ -217,6 +298,8 @@ public class ActivePet {
         try { return b.isPassable(); }
         catch (Throwable ignored) { return !t.isSolid(); }
     }
+
+    /* ===================== FOLLOW ===================== */
 
     private void followTick() {
         if (entity instanceof Sittable s && s.isSitting()) {
@@ -298,6 +381,8 @@ public class ActivePet {
                 || t == Material.BUBBLE_COLUMN;
     }
 
+    /* ===================== WHISTLE ===================== */
+
     public void whistleSummon() {
         Location rnd = owner.getLocation().clone().add(-1 + Math.random() * 2, 0, -1 + Math.random() * 2);
         Location safe = findSafeSpawnNear(rnd);
@@ -312,13 +397,11 @@ public class ActivePet {
 
         entity.teleport(safe);
 
-        Bukkit.getScheduler().runTask(plugin, () -> {
-            if (entity != null && nameTag != null && !nameTag.isDead()) {
-                try {
-                    if (!entity.getPassengers().contains(nameTag)) entity.addPassenger(nameTag);
-                } catch (Throwable ignored) {}
-            }
-        });
+        // nametag meteen mee
+        ensureNameTag(false);
+        if (nameTag != null && nameTag.isValid() && !nameTag.isDead()) {
+            nameTag.teleport(computeNameTagLocation(entity));
+        }
 
         gaveUp = false;
         following = false;
@@ -326,22 +409,29 @@ public class ActivePet {
         walkAccum = 0;
     }
 
+    /* ===================== SITTING ===================== */
+
     public void setSitting(boolean sit) {
         if (entity instanceof Sittable s) s.setSitting(sit);
     }
 
+    /* ===================== REMOVE ===================== */
+
     public void remove() {
-        if (task != -1) {
-            Bukkit.getScheduler().cancelTask(task);
-            task = -1;
+        if (nameTask != -1) {
+            Bukkit.getScheduler().cancelTask(nameTask);
+            nameTask = -1;
+        }
+        if (mainTask != -1) {
+            Bukkit.getScheduler().cancelTask(mainTask);
+            mainTask = -1;
         }
 
-        // ✅ AuraSkills bonus weg
+        // AuraSkills bonus weg (optioneel)
         try {
             var hook = plugin.getAuraSkillsHook();
             if (hook != null) hook.removeMiningSpeedBonus(owner, pet);
         } catch (Throwable ignored) {}
-
 
         if (nameTag != null) {
             try { nameTag.remove(); } catch (Throwable ignored) {}
@@ -354,5 +444,7 @@ public class ActivePet {
         }
     }
 
-    public Entity getEntity() { return entity; }
+    public Entity getEntity() {
+        return entity;
+    }
 }
