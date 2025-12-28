@@ -25,4 +25,9 @@ basket:
 menu:
   itemsadder_id: "master_bedroom_furniture_v1:basket"
 
+grinden:
+  mining-speed-per-level: 0.005  # 0.5% per level boven 1
+  mining-speed-cap: 0.05         # max 5%
+
+
 

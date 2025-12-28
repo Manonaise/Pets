@@ -6,6 +6,7 @@ import net.kyori.adventure.text.Component;
 import org.Manonaise.pets.Pets;
 import org.Manonaise.pets.data.Pet;
 import org.Manonaise.pets.data.PetType;
+import org.Manonaise.pets.listeners.MenuGateListener;
 import org.Manonaise.pets.menu.ItemsMenu;
 import org.Manonaise.pets.menu.PetMenu;
 import org.Manonaise.pets.util.ItemBuilder;
@@ -51,44 +52,62 @@ public class PetCommand implements BasicCommand {
 
     private void handleGive(CommandSender sender, String[] args) {
         if (!sender.hasPermission("pet.command.give")) { sender.sendMessage(ChatColor.RED+"Geen permissie."); return; }
+
+        // ✅ Nieuwe syntax voor mythic:
+        // /pet give <speler> mythic <MythicMobId> <naam...>
+        // /pet give <speler> <type> <naam...> [CAT-variant]
         if (args.length < 4) {
-            sender.sendMessage(ChatColor.RED+"/pet give <speler> <soortdier> <naam...> [CAT-variant] [mythicModel]");
-            sender.sendMessage(ChatColor.GRAY+"mythicModel komt uit config: mythic.models.<TYPE>");
+            sender.sendMessage(ChatColor.RED+"/pet give <speler> <type|mythic> <naam...>");
+            sender.sendMessage(ChatColor.RED+"/pet give <speler> mythic <MythicMobId> <naam...>");
             return;
         }
+
         Player target = Bukkit.getPlayerExact(args[1]);
         if (target == null) { sender.sendMessage(ChatColor.RED+"Speler niet online."); return; }
 
-        PetType type = PetType.from(args[2]);
-        if (type == null) {
-            sender.sendMessage(ChatColor.RED+"Onbekend dier. Opties: "+
-                    Arrays.stream(PetType.values()).map(PetType::name).collect(Collectors.joining(", ")));
-            return;
-        }
-
-        // Alle "rest"-arguments: naam, evt variant, evt model
-        List<String> tail = new ArrayList<>(Arrays.asList(args).subList(3, args.length));
-        if (tail.isEmpty()) {
-            sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven.");
-            return;
-        }
-
-        String variant = null;
+        PetType type;
         String mythicId = null;
 
-        // Lijst van toegestane Mythic-modellen voor dit type uit config
-        List<String> models = getConfiguredMythicModelsForType(type);
-
-        // 1) Kijk eerst of laatste arg een modelnaam is (uit config)
-        if (!tail.isEmpty() && !models.isEmpty()) {
-            String last = tail.get(tail.size() - 1);
-            if (models.contains(last)) {
-                mythicId = last;
-                tail.remove(tail.size() - 1);
+        // ✅ 1) Expliciet "mythic" keyword
+        if (args[2].equalsIgnoreCase("mythic")) {
+            if (args.length < 5) {
+                sender.sendMessage(ChatColor.RED+"Gebruik: /pet give <speler> mythic <MythicMobId> <naam...>");
+                return;
             }
+            type = PetType.MYTHIC;
+            mythicId = args[3];
+
+            // naam is alles vanaf args[4]
+            String name = ChatColor.translateAlternateColorCodes('&',
+                    String.join(" ", Arrays.copyOfRange(args, 4, args.length)));
+
+            givePet(sender, target, type, name, null, mythicId);
+            return;
         }
 
-        // 2) Speciaal voor CAT: varianten
+        // ✅ 2) Normale types (wolf/cat/...)
+        type = PetType.from(args[2]);
+
+        // ✅ 3) Backwards-compatible: als type onbekend → behandel args[2] als mythicMobId
+        // Dan werkt ook: /pet give <speler> Nocsy_Cat-Munchkin <naam...>
+        if (type == null) {
+            type = PetType.MYTHIC;
+            mythicId = args[2];
+
+            String name = ChatColor.translateAlternateColorCodes('&',
+                    String.join(" ", Arrays.copyOfRange(args, 3, args.length)));
+
+            givePet(sender, target, type, name, null, mythicId);
+            return;
+        }
+
+        // Vanaf hier: vanilla pet type
+        List<String> tail = new ArrayList<>(Arrays.asList(args).subList(3, args.length));
+        if (tail.isEmpty()) { sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven."); return; }
+
+        String variant = null;
+
+        // CAT variant als laatste arg
         if (type == PetType.CAT && !tail.isEmpty()) {
             String last = tail.get(tail.size() - 1);
             if (isCatVariant(last)) {
@@ -98,23 +117,40 @@ public class PetCommand implements BasicCommand {
         }
 
         if (tail.isEmpty()) {
-            sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven (voor variant/model).");
+            sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven (voor variant).");
             return;
         }
 
         String name = ChatColor.translateAlternateColorCodes('&', String.join(" ", tail));
+        givePet(sender, target, type, name, variant, null);
+    }
+
+    private void givePet(CommandSender sender, Player target, PetType type, String name, String variant, String mythicId) {
+        // MythicMobs check
+        if (type == PetType.MYTHIC) {
+            if (plugin.getMythicMobsHook() == null || !plugin.getMythicMobsHook().isAvailable()) {
+                sender.sendMessage(ChatColor.RED + "MythicMobs is niet aanwezig, dus Mythic pets kunnen niet.");
+                return;
+            }
+            if (mythicId == null || mythicId.isBlank()) {
+                sender.sendMessage(ChatColor.RED + "MythicMobId is leeg.");
+                return;
+            }
+        }
 
         Pet pet = plugin.getPetManager().createPet(target.getUniqueId(), type, name);
         if (variant != null) pet.setVariant(variant);
         if (mythicId != null) pet.setMythicMobId(mythicId);
+
         plugin.getPetManager().save();
 
-        sender.sendMessage(
-                ChatColor.GREEN + "Pet gegeven: " + name + " (#" + pet.getId() + ") aan " + target.getName()
-                        + (variant!=null ? ChatColor.GRAY+" [CAT variant: "+variant+"]" : "")
-                        + (mythicId!=null ? ChatColor.DARK_AQUA+" [Model: "+mythicId+"]" : "")
+        sender.sendMessage(ChatColor.GREEN + "Pet gegeven: " + name + " (#" + pet.getId() + ") aan " + target.getName()
+                + (variant != null ? ChatColor.GRAY + " [CAT variant: " + variant + "]" : "")
+                + (mythicId != null ? ChatColor.DARK_AQUA + " [Mythic: " + mythicId + "]" : "")
         );
-        target.sendMessage(ChatColor.GREEN + "Je kreeg een nieuwe pet: " + name + "!");
+
+        // Optioneel: meteen spawnen
+        plugin.getPetManager().spawn(target, pet);
     }
 
     private boolean isCatVariant(String v){
@@ -122,12 +158,6 @@ public class PetCommand implements BasicCommand {
         catch (Exception e){ return false; }
     }
     private String normalizeCatVariant(String v){ return v.toUpperCase(Locale.ROOT); }
-
-    private List<String> getConfiguredMythicModelsForType(PetType type){
-        String path = "mythic.models." + type.name();
-        List<String> list = plugin.getConfig().getStringList(path);
-        return list != null ? list : Collections.emptyList();
-    }
 
     /* ============================ /pet remove ============================ */
 
@@ -151,29 +181,24 @@ public class PetCommand implements BasicCommand {
 
         boolean allowedByToken = false;
         try {
-            Long until = p.getPersistentDataContainer().get(Pets.key("pet-menu-allow-until"),
-                    org.bukkit.persistence.PersistentDataType.LONG);
+            Long until = p.getPersistentDataContainer().get(
+                    Pets.key(MenuGateListener.KEY_ALLOW_UNTIL),
+                    PersistentDataType.LONG
+            );
             if (until != null && System.currentTimeMillis() <= until) {
                 allowedByToken = true;
-                p.getPersistentDataContainer().remove(Pets.key("pet-menu-allow-until"));
+                p.getPersistentDataContainer().remove(Pets.key(MenuGateListener.KEY_ALLOW_UNTIL));
             }
         } catch (Throwable ignored) {}
 
-        // ItemsAdder gating laten we voorlopig staan, maar is optioneel.
-        boolean holdingIaItem = false; // voor nu uit
+        boolean holdingIaItem = false; // optioneel
 
         if (!bypass && !allowedByToken && !holdingIaItem) {
             p.sendMessage(ChatColor.RED + "Je kunt dit menu alleen openen via een dierenmand-blok of speciale permissie.");
             return;
         }
 
-        Player target;
-        if (args.length >= 2 && sender.hasPermission("pet.command.give")) {
-            target = Bukkit.getPlayerExact(args[1]);
-            if (target == null) { sender.sendMessage(ChatColor.RED+"Speler niet online."); return; }
-        } else target = p;
-
-        new PetMenu(plugin, target).open(target);
+        new PetMenu(plugin, p).open(p);
     }
 
     /* ============================ /pet items menu ============================ */
@@ -228,13 +253,7 @@ public class PetCommand implements BasicCommand {
     }
 
     /* ============================ /pet basket ============================ */
-    /*
-     * /pet basket              → speciale mand-blok aan jezelf
-     * /pet basket <speler>     → speciale mand-blok aan andere speler
-     *
-     * Dit is GEEN ItemsAdder meer; gewoon een vanilla blok met PDC:
-     * key = "pet-basket"
-     */
+
     private void handleBasket(CommandSender sender, String[] args) {
         if (!sender.hasPermission("pet.command.basket")) {
             sender.sendMessage(ChatColor.RED + "Geen permissie.");
@@ -256,29 +275,20 @@ public class PetCommand implements BasicCommand {
             target = p;
         }
 
-        // Maak een speciaal gemarkeerd blok (bijv. BARREL) dat het PetMenu opent bij plaatsen
         ItemStack stack = new ItemBuilder(Material.BARREL)
                 .name("&6Dierenmand")
                 .lore("§7Plaats dit blok om het dierenmenu te openen.")
                 .build();
 
         ItemMeta meta = stack.getItemMeta();
-        meta.getPersistentDataContainer().set(
-                Pets.key("pet-basket"),
-                PersistentDataType.BYTE,
-                (byte) 1
-        );
+        meta.getPersistentDataContainer().set(Pets.key("pet-basket"), PersistentDataType.BYTE, (byte) 1);
         stack.setItemMeta(meta);
 
         Map<Integer, ItemStack> leftover = target.getInventory().addItem(stack);
-        leftover.values().forEach(lf ->
-                target.getWorld().dropItemNaturally(target.getLocation(), lf)
-        );
+        leftover.values().forEach(lf -> target.getWorld().dropItemNaturally(target.getLocation(), lf));
 
         sender.sendMessage(ChatColor.GREEN + "Dierenmand gegeven aan " + target.getName() + ".");
-        if (sender != target) {
-            target.sendMessage(ChatColor.GREEN + "Je hebt een dierenmand ontvangen.");
-        }
+        if (sender != target) target.sendMessage(ChatColor.GREEN + "Je hebt een dierenmand ontvangen.");
     }
 
     /* ============================ Suggesties ============================ */
@@ -292,42 +302,13 @@ public class PetCommand implements BasicCommand {
 
         if (args[0].equalsIgnoreCase("give")) {
             if (args.length == 2) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
-            if (args.length == 3) return Arrays.stream(PetType.values()).map(PetType::name).toList();
-
-            // Suggesties voor naam/variant/model
-            if (args.length >= 5) {
-                PetType type = PetType.from(args[2]);
-                if (type != null) {
-                    String last = args[args.length - 1];
-
-                    List<String> out = new ArrayList<>();
-
-                    // Voor CAT: variants
-                    if (type == PetType.CAT) {
-                        out.addAll(filter(Arrays.stream(Cat.Type.values()).map(Cat.Type::name).toList(), last));
-                    }
-
-                    // Mythic models uit config
-                    out.addAll(filter(getConfiguredMythicModelsForType(type), last));
-
-                    return out;
-                }
+            if (args.length == 3) {
+                // ✅ voeg "mythic" toe
+                List<String> base = new ArrayList<>();
+                base.add("mythic");
+                base.addAll(Arrays.stream(PetType.values()).map(PetType::name).toList());
+                return base;
             }
-        }
-
-        if (args[0].equalsIgnoreCase("menu") && args.length == 2)
-            return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
-
-        if (args[0].equalsIgnoreCase("items") && args.length == 2)
-            return filter(List.of("menu"), args[1]);
-
-        if (args[0].equalsIgnoreCase("givefood")) {
-            if (args.length == 2) return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
-            if (args.length == 3) return List.of("1","8","16","32","64");
-        }
-
-        if (args[0].equalsIgnoreCase("basket") && args.length == 2) {
-            return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
         }
 
         return List.of();

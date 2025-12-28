@@ -2,16 +2,24 @@ name: Pets
 version: 1.0.0
 main: org.Manonaise.pets.Pets
 description: Pets plugin
-api-version: '1.21'
+api-version: "1.21"
 
-softdepend: [ItemsAdder]
+dependencies:
+  server:
+    AuraSkills:
+      load: BEFORE
+      required: true
+      join-classpath: true
 
-# (We gebruiken Paper's registerCommand in code; dit blok mag blijven of weg)
-commands:
-  pet:
-    description: Pets hoofdcommand
-    usage: /pet
-    aliases: [pets]
+    MythicMobs:
+      load: BEFORE
+      required: false
+      join-classpath: true
+
+    ItemsAdder:
+      load: BEFORE
+      required: false
+      join-classpath: true
 
 permissions:
   pet.command.give:
@@ -19,13 +27,12 @@ permissions:
   pet.command.remove:
     default: op
   pet.command.menu:
-    default: false   # ← eerder true; nu uitzetten
+    default: false
   pet.command.menu.bypass:
-    default: op      # ← staff/bypass
+    default: op
   pet.command.items.menu:
     default: true
   pet.command.whistle:
     default: true
   pet.command.givefood:
     default: op
-

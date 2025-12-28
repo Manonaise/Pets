@@ -1,80 +1,85 @@
 package org.Manonaise.pets.follow;
 
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.Manonaise.pets.Pets;
 import org.Manonaise.pets.data.Pet;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
-import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.*;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.util.Vector;
 
 public class ActivePet {
+
+    private static final LegacyComponentSerializer LEGACY = LegacyComponentSerializer.legacyAmpersand();
+
     private final Pets plugin;
     private final Player owner;
     private final Pet pet;
 
     private Entity entity;
-
-    // ✅ “Vaste” nametag die aan het dier hangt
     private ArmorStand nameTag;
-    private boolean tagIsPassenger = false;
-
     private int task = -1;
+
     private long lootStartMs = System.currentTimeMillis();
     private boolean gaveUp = false;
     private boolean following = false;
 
-    // Walk tracking
     private Location lastLoc;
     private double walkAccum = 0.0;
 
-    // Cache voor tekst updates
-    private String lastShownName = null;
     private int lastShownLevel = -1;
 
-    public ActivePet(Pets plugin, Player owner, Pet pet){
+    // AuraSkills mining boost tracking
+    private int lastGrindLevel = -1;
+    private double lastAppliedAmount = Double.NaN;
+
+    public ActivePet(Pets plugin, Player owner, Pet pet) {
         this.plugin = plugin;
         this.owner = owner;
         this.pet = pet;
         spawn();
     }
 
-    private void spawn(){
-        Location base = findSafeSpawnNear(owner);
-        entity = pet.getType().spawn(base, pet, owner);
+    private void spawn() {
+        Location base = computeBaseSpawn(owner.getLocation());
+        Location safe = findSafeSpawnNear(base);
 
-        // ✅ Maak nametag die als passenger vast hangt
-        ensureNameTag(true);
+        entity = pet.getType().spawn(safe, pet, owner);
 
-        // PDC markeringen
-        entity.getPersistentDataContainer().set(Pets.key("pet-owner"),
-                org.bukkit.persistence.PersistentDataType.STRING, owner.getUniqueId().toString());
-        entity.getPersistentDataContainer().set(Pets.key("pet-id"),
-                org.bukkit.persistence.PersistentDataType.INTEGER, pet.getId());
+        entity.getPersistentDataContainer().set(Pets.key("pet-owner"), PersistentDataType.STRING, owner.getUniqueId().toString());
+        entity.getPersistentDataContainer().set(Pets.key("pet-id"), PersistentDataType.INTEGER, pet.getId());
+
+        // naam op entity (extra zekerheid)
+        try {
+            entity.customName(petNameComponent());
+            entity.setCustomNameVisible(true);
+        } catch (Throwable ignored) {}
+
+        spawnNameTagPassenger();
 
         lastLoc = entity.getLocation();
+        walkAccum = 0;
 
-        // 10 ticks loop (bestaat al voor follow/walk)
+        // direct mining boost
+        updateMiningBoost(true);
+
         task = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
-            if (entity == null || entity.isDead() || !entity.isValid()) {
+            if (entity == null || entity.isDead() || !owner.isOnline()) {
                 remove();
                 return;
             }
 
-            // ✅ Alleen tekst updaten als naam/level veranderd is
-            ensureNameTag(false);
-
-            // Als passenger niet gelukt is (heel zeldzaam) -> 1x per tickloop netjes meeteleporteren
-            if (nameTag != null && !tagIsPassenger) {
-                Location above = above(entity);
-                nameTag.teleport(above);
+            if (pet.getLevel() != lastShownLevel) {
+                updateNameTagText();
             }
 
-            // Wassen-quest in water
+            updateMiningBoost(false);
+
             if (isInWater(entity.getLocation())) {
                 long now = System.currentTimeMillis();
                 long cd = plugin.getConfig().getInt("wash.cooldown-seconds", 60) * 1000L;
@@ -84,17 +89,14 @@ public class ActivePet {
                 }
             }
 
-            // Volgen
             followTick();
 
-            // Wandel-quest op basis van afstand
             Location cur = entity.getLocation();
             double moved = cur.distance(lastLoc);
-
             if (moved > 0 && moved < 6.0) {
                 walkAccum += moved;
                 if (walkAccum >= 1.0) {
-                    int blocks = (int)Math.floor(walkAccum);
+                    int blocks = (int) Math.floor(walkAccum);
                     walkAccum -= blocks;
                     plugin.getPetManager().addWalkProgressForPet(pet, blocks);
                 }
@@ -104,129 +106,119 @@ public class ActivePet {
         }, 10L, 10L);
     }
 
-    /**
-     * ✅ Zorgt dat er een nametag bestaat en dat de tekst klopt.
-     * force=true bij spawn/teleport.
-     */
-    private void ensureNameTag(boolean force){
-        if (entity == null) return;
+    private void spawnNameTagPassenger() {
+        if (nameTag != null && !nameTag.isDead()) nameTag.remove();
+        nameTag = null;
 
-        // 1) Spawn tag als die weg is
-        if (nameTag == null || nameTag.isDead() || !nameTag.isValid()) {
-            spawnNameTag();
-            force = true;
-        }
+        Location at = entity.getLocation().clone();
 
-        // 2) Update text alleen als nodig
-        String nowName = pet.getName();
-        int nowLevel = pet.getLevel();
-        if (!force
-                && nowLevel == lastShownLevel
-                && ((nowName == null && lastShownName == null) || (nowName != null && nowName.equals(lastShownName)))) {
+        nameTag = (ArmorStand) at.getWorld().spawn(at, ArmorStand.class, as -> {
+            as.setInvisible(true);
+            as.setMarker(true);
+            as.setGravity(false);
+            as.setSmall(true);
+            as.setBasePlate(false);
+            as.setInvulnerable(true);
+            as.setPersistent(false);
+            as.setCollidable(false);
+            as.customName(petNameComponent());
+            as.setCustomNameVisible(true);
+        });
+
+        try { entity.addPassenger(nameTag); } catch (Throwable ignored) {}
+
+        lastShownLevel = pet.getLevel();
+    }
+
+    private void updateNameTagText() {
+        try {
+            entity.customName(petNameComponent());
+            entity.setCustomNameVisible(true);
+        } catch (Throwable ignored) {}
+
+        if (nameTag == null || nameTag.isDead()) {
+            spawnNameTagPassenger();
             return;
         }
-        lastShownName = nowName;
-        lastShownLevel = nowLevel;
+        nameTag.customName(petNameComponent());
+        nameTag.setCustomNameVisible(true);
+        lastShownLevel = pet.getLevel();
+    }
 
-        if (nameTag != null) {
-            nameTag.setCustomName(buildLegacyName());
-            nameTag.setCustomNameVisible(true);
+    private Component petNameComponent() {
+        Component nm = LEGACY.deserialize(pet.getName());
+        return nm.append(Component.text(" §7(Lv." + pet.getLevel() + ")"));
+    }
+
+    private void updateMiningBoost(boolean force) {
+        int g = pet.getUpGrinden();
+
+        double perLevel = plugin.getConfig().getDouble("grinden.auraskills-per-level", 0.01); // 1% per level
+        double cap = plugin.getConfig().getDouble("grinden.auraskills-cap", 0.10);            // max 10%
+
+        double amount = 0.0;
+        if (g > 1) {
+            amount = (g - 1) * perLevel;
+            if (amount > cap) amount = cap;
         }
-    }
 
-    private void spawnNameTag(){
-        try {
-            // Spawn boven het dier
-            Location loc = above(entity);
+        if (!force && g == lastGrindLevel && Double.compare(amount, lastAppliedAmount) == 0) return;
 
-            nameTag = entity.getWorld().spawn(loc, ArmorStand.class, as -> {
-                as.setInvisible(true);
-                as.setMarker(true);          // ✅ geen hitbox, super licht
-                as.setGravity(false);
-                as.setSmall(true);
-                as.setArms(false);
-                as.setBasePlate(false);
-                as.setInvulnerable(true);
-                as.setPersistent(false);
-                as.setCollidable(false);
+        lastGrindLevel = g;
+        lastAppliedAmount = amount;
 
-                as.setCustomName(buildLegacyName());
-                as.setCustomNameVisible(true);
-            });
-
-            // ✅ Hang de tag vast aan het dier (passenger)
-            tagIsPassenger = false;
-            try {
-                tagIsPassenger = entity.addPassenger(nameTag);
-            } catch (Throwable ignored) {
-                tagIsPassenger = false;
-            }
-
-            // Als passenger faalt: laten we hem meebewegen in de tickloop (teleport 10 ticks)
-            if (!tagIsPassenger) {
-                nameTag.teleport(above(entity));
-            }
-
-        } catch (Throwable t) {
-            // Als het écht fout gaat, geen crash: gewoon geen tag.
-            nameTag = null;
-            tagIsPassenger = false;
+        // ✅ alleen via AuraSkills
+        var hook = plugin.getAuraSkillsHook();
+        if (hook != null) {
+            hook.setMiningSpeedBonus(owner, pet, amount);
         }
+
     }
 
-    private Location above(Entity e){
-        // vergelijkbaar met jouw HoloName offset, maar zonder tick-follow nodig
-        return e.getLocation().add(0, e.getHeight() + 0.35, 0);
+    public int elapsedMinutesSinceLoot() {
+        return (int) ((System.currentTimeMillis() - lootStartMs) / 60000L);
     }
 
-    private String buildLegacyName(){
-        return ChatColor.GOLD + pet.getName()
-                + ChatColor.GRAY + " (Lv."
-                + ChatColor.YELLOW + pet.getLevel()
-                + ChatColor.GRAY + ")";
+    public void resetLootTimer() {
+        lootStartMs = System.currentTimeMillis();
     }
 
-    private Location findSafeSpawnNear(Player p) {
-        Location pl = p.getLocation();
-        World w = pl.getWorld();
-        if (w == null) return pl.clone().add(0, 1, 0);
+    private Location computeBaseSpawn(Location playerLoc) {
+        Location l = playerLoc.clone();
+        Vector dir = l.getDirection().setY(0).normalize();
+        l.add(dir.multiply(1.5));
+        return l;
+    }
 
-        int baseX = pl.getBlockX();
-        int baseZ = pl.getBlockZ();
-        int baseY = pl.getBlockY();
+    private Location findSafeSpawnNear(Location base) {
+        Location start = base.clone();
+        start.setY(base.getY());
 
-        int[][] offsets = {
-                { 1, 0}, {-1, 0}, { 0, 1}, { 0,-1},
-                { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1},
-                { 2, 0}, {-2, 0}, { 0, 2}, { 0,-2},
-                { 3, 0}, {-3, 0}, { 0, 3}, { 0,-3}
-        };
-
-        for (int[] off : offsets) {
-            int x = baseX + off[0];
-            int z = baseZ + off[1];
-
-            if (!w.isChunkLoaded(x >> 4, z >> 4)) w.getChunkAt(x >> 4, z >> 4);
-
-            for (int y = baseY + 3; y >= baseY - 6; y--) {
-                Block ground = w.getBlockAt(x, y - 1, z);
-                Block feet   = w.getBlockAt(x, y, z);
-                Block head   = w.getBlockAt(x, y + 1, z);
-
-                if (!ground.getType().isSolid()) continue;
-                if (!feet.isPassable() || !head.isPassable()) continue;
-
-                Material ft = feet.getType();
-                if (ft == Material.WATER || ft == Material.LAVA) continue;
-
-                return new Location(w, x + 0.5, y, z + 0.5, pl.getYaw(), pl.getPitch());
+        Location up = start.clone();
+        for (int dy = 0; dy <= 8; dy++) {
+            Location c = start.clone().add(0, dy, 0);
+            if (isPassable(c.getBlock()) && isPassable(c.clone().add(0, 1, 0).getBlock())) {
+                up = c;
+                break;
             }
         }
 
-        return pl.clone().add(0, 1, 0);
+        Location grounded = up.clone();
+        for (int dy = 0; dy <= 8; dy++) {
+            Block below = grounded.clone().add(0, -1, 0).getBlock();
+            if (!isPassable(below)) return grounded;
+            grounded.subtract(0, 1, 0);
+        }
+        return up;
     }
 
-    private void followTick(){
+    private boolean isPassable(Block b) {
+        Material t = b.getType();
+        try { return b.isPassable(); }
+        catch (Throwable ignored) { return !t.isSolid(); }
+    }
+
+    private void followTick() {
         if (entity instanceof Sittable s && s.isSitting()) {
             stopPathfindingIfMob();
             entity.setVelocity(new Vector());
@@ -239,12 +231,12 @@ public class ActivePet {
         double d2 = pl.distanceSquared(el);
 
         final double keepDistance = 2.0;
-        final int maxRange   = plugin.getConfig().getInt("follow.max-range", 40);
+        final int maxRange = plugin.getConfig().getInt("follow.max-range", 40);
         final int startRange = plugin.getConfig().getInt("follow.teleport-range", 15);
 
-        final double keepSq  = keepDistance * keepDistance;
+        final double keepSq = keepDistance * keepDistance;
         final double startSq = startRange * startRange;
-        final double stopSq  = maxRange * maxRange;
+        final double stopSq = maxRange * maxRange;
 
         if (d2 > stopSq) {
             if (!gaveUp) {
@@ -270,23 +262,26 @@ public class ActivePet {
 
         gaveUp = false;
 
-        double speed = Math.max(0.1, (1.0 + (pet.getUpSnelheid()-1) * 0.10) * pet.penaltyMultiplier());
+        double speed = Math.max(0.1, (1.0 + (pet.getUpSnelheid() - 1) * 0.10) * pet.penaltyMultiplier());
 
         if (entity instanceof Mob mob) {
-            try { mob.getPathfinder().moveTo(owner, speed); }
-            catch (Throwable ignored) { velocityFallback(pl, el); }
+            try {
+                mob.getPathfinder().moveTo(owner, speed);
+            } catch (Throwable ignored) {
+                velocityFallback(pl, el);
+            }
         } else {
             velocityFallback(pl, el);
         }
     }
 
-    private void velocityFallback(Location pl, Location el){
+    private void velocityFallback(Location pl, Location el) {
         Vector dir = pl.toVector().subtract(el.toVector())
                 .normalize()
-                .multiply(0.25 + (pet.getUpSnelheid()-1)*0.05)
+                .multiply(0.25 + (pet.getUpSnelheid() - 1) * 0.05)
                 .multiply(pet.penaltyMultiplier());
         entity.setVelocity(dir);
-        if(entity instanceof Creature c){ c.setTarget(owner); }
+        if (entity instanceof Creature c) c.setTarget(owner);
     }
 
     private void stopPathfindingIfMob() {
@@ -295,57 +290,69 @@ public class ActivePet {
         }
     }
 
-    private boolean isInWater(Location loc){
+    private boolean isInWater(Location loc) {
         Block b = loc.getBlock();
         Material t = b.getType();
         return t == Material.WATER
-                || (Tag.ICE.isTagged(t) && b.getRelative(0,-1,0).getType()==Material.WATER)
+                || (Tag.ICE.isTagged(t) && b.getRelative(0, -1, 0).getType() == Material.WATER)
                 || t == Material.BUBBLE_COLUMN;
     }
 
-    public int elapsedMinutesSinceLoot(){
-        return (int)((System.currentTimeMillis()-lootStartMs)/60000L);
-    }
-    public void resetLootTimer(){ lootStartMs = System.currentTimeMillis(); }
+    public void whistleSummon() {
+        Location rnd = owner.getLocation().clone().add(-1 + Math.random() * 2, 0, -1 + Math.random() * 2);
+        Location safe = findSafeSpawnNear(rnd);
 
-    public void whistleSummon(){
-        Location target = findSafeSpawnNear(owner);
         stopPathfindingIfMob();
 
         entity.getPersistentDataContainer().set(
                 Pets.key("pet-whistle-allow-until"),
-                org.bukkit.persistence.PersistentDataType.LONG,
+                PersistentDataType.LONG,
                 System.currentTimeMillis() + 2000L
         );
 
-        entity.teleport(target);
+        entity.teleport(safe);
+
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (entity != null && nameTag != null && !nameTag.isDead()) {
+                try {
+                    if (!entity.getPassengers().contains(nameTag)) entity.addPassenger(nameTag);
+                } catch (Throwable ignored) {}
+            }
+        });
+
         gaveUp = false;
         following = false;
         lastLoc = entity.getLocation();
         walkAccum = 0;
-
-        // passenger tag volgt automatisch; anders teleporten we hem 1x
-        if (nameTag != null && !tagIsPassenger) nameTag.teleport(above(entity));
-        ensureNameTag(true);
     }
 
-    public void setSitting(boolean sit){
-        if(entity instanceof Sittable s) s.setSitting(sit);
+    public void setSitting(boolean sit) {
+        if (entity instanceof Sittable s) s.setSitting(sit);
     }
 
-    public void remove(){
-        if(task!=-1){ Bukkit.getScheduler().cancelTask(task); task=-1; }
+    public void remove() {
+        if (task != -1) {
+            Bukkit.getScheduler().cancelTask(task);
+            task = -1;
+        }
+
+        // ✅ AuraSkills bonus weg
+        try {
+            var hook = plugin.getAuraSkillsHook();
+            if (hook != null) hook.removeMiningSpeedBonus(owner, pet);
+        } catch (Throwable ignored) {}
+
 
         if (nameTag != null) {
-            try {
-                if (tagIsPassenger && entity != null) entity.removePassenger(nameTag);
-            } catch (Throwable ignored) {}
-            nameTag.remove();
+            try { nameTag.remove(); } catch (Throwable ignored) {}
             nameTag = null;
         }
 
-        if(entity!=null){ entity.remove(); entity=null; }
+        if (entity != null) {
+            entity.remove();
+            entity = null;
+        }
     }
 
-    public Entity getEntity(){ return entity; }
+    public Entity getEntity() { return entity; }
 }

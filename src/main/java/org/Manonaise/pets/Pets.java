@@ -1,69 +1,65 @@
 package org.Manonaise.pets;
 
+import io.papermc.paper.command.brigadier.Commands;
+import io.papermc.paper.plugin.lifecycle.event.LifecycleEventManager;
+import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import org.Manonaise.pets.commands.PetCommand;
 import org.Manonaise.pets.data.PetManager;
+import org.Manonaise.pets.integrations.AuraSkillsHook;
+import org.Manonaise.pets.integrations.MythicMobsHook;
 import org.Manonaise.pets.items.ItemsManager;
 import org.Manonaise.pets.listeners.*;
 import org.bukkit.Bukkit;
 import org.bukkit.NamespacedKey;
+import org.bukkit.plugin.Plugin; // ✅ nieuw
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scoreboard.Scoreboard;
-import org.bukkit.scoreboard.Team;
 
 public final class Pets extends JavaPlugin {
+
     private static Pets instance;
 
     private PetManager petManager;
     private ItemsManager itemsManager;
 
-    // ✅ Team naam moet kort zijn (veilig voor scoreboard limits)
-    private static final String PET_TEAM_NAME = "petsTag";
+    private AuraSkillsHook auraSkillsHook;
+    private MythicMobsHook mythicMobsHook;
 
-    public static Pets getInstance(){ return instance; }
-    public PetManager getPetManager(){ return petManager; }
-    public ItemsManager getItemsManager(){ return itemsManager; }
+    public static Pets getInstance() { return instance; }
 
-    public static NamespacedKey key(String k){ return new NamespacedKey(getInstance(), k); }
+    public PetManager getPetManager() { return petManager; }
+    public ItemsManager getItemsManager() { return itemsManager; }
 
-    /** ✅ Scoreboard team dat nametags ALTIJD toont. */
-    public Team getPetNametagTeam() {
-        try {
-            var mgr = Bukkit.getScoreboardManager();
-            if (mgr == null) return null;
+    public AuraSkillsHook getAuraSkillsHook() { return auraSkillsHook; }
+    public MythicMobsHook getMythicMobsHook() { return mythicMobsHook; }
 
-            Scoreboard sb = mgr.getMainScoreboard();
-            Team team = sb.getTeam(PET_TEAM_NAME);
-            if (team == null) team = sb.registerNewTeam(PET_TEAM_NAME);
-
-            // Forceer nametag always zichtbaar
-            team.setOption(Team.Option.NAME_TAG_VISIBILITY, Team.OptionStatus.ALWAYS);
-
-            // Optioneel: collision uit zodat pets niet duwen
-            team.setOption(Team.Option.COLLISION_RULE, Team.OptionStatus.NEVER);
-
-            return team;
-        } catch (Throwable t) {
-            return null;
-        }
+    public static NamespacedKey key(String k) {
+        return new NamespacedKey(getInstance(), k);
     }
 
     @Override
     public void onEnable() {
         instance = this;
 
-        if (getResource("config.yml") != null) saveDefaultConfig();
+        saveDefaultConfig();
 
-        this.petManager   = new PetManager(this);
         this.itemsManager = new ItemsManager(this);
+        this.petManager = new PetManager(this);
 
-        // ✅ Zorg dat team bestaat bij startup
-        getPetNametagTeam();
+        if (Bukkit.getPluginManager().getPlugin("AuraSkills") == null) {
+            throw new RuntimeException("AuraSkills is verplicht (depend), maar werd niet gevonden.");
+        }
+        this.auraSkillsHook = new AuraSkillsHook(this);
 
-        // Commands
-        this.registerCommand("pet", new PetCommand(this));
-        this.registerCommand("petmenutoken", new org.Manonaise.pets.commands.PetMenuTokenCommand(this));
+        if (Bukkit.getPluginManager().getPlugin("MythicMobs") != null) {
+            this.mythicMobsHook = new MythicMobsHook(this);
+            getLogger().info("MythicMobs gevonden -> Mythic pets enabled.");
+        } else {
+            this.mythicMobsHook = null;
+            getLogger().info("MythicMobs niet gevonden -> Mythic pets disabled.");
+        }
 
-        // Listeners
+        registerCommands();
+
         Bukkit.getPluginManager().registerEvents(new InteractionListener(this), this);
         Bukkit.getPluginManager().registerEvents(new InventoryListener(this), this);
         Bukkit.getPluginManager().registerEvents(new QuitListener(this), this);
@@ -75,7 +71,25 @@ public final class Pets extends JavaPlugin {
             Bukkit.getPluginManager().registerEvents(new MenuGateListener(this), this);
         }
 
-        getLogger().info("Pets enabled");
+        getLogger().info("Enabled Pets v" + getDescription().getVersion());
+    }
+
+    private void registerCommands() {
+        final PetCommand petCommand = new PetCommand(this);
+
+        // ✅ JOUW API: LifecycleEventManager<Plugin>
+        LifecycleEventManager<Plugin> mgr = this.getLifecycleManager();
+
+        mgr.registerEventHandler(LifecycleEvents.COMMANDS, event -> {
+            Commands commands = event.registrar();
+
+            commands.register(
+                    "pet",
+                    "Pets hoofdcommand",
+                    java.util.List.of("pets"),
+                    petCommand
+            );
+        });
     }
 
     @Override
@@ -86,7 +100,6 @@ public final class Pets extends JavaPlugin {
         }
         if (itemsManager != null) itemsManager.save();
 
-        // (Team laten we bestaan; unregister kan andere plugins beïnvloeden als ze hergebruiken)
-        getLogger().info("Pets disabled");
+        instance = null;
     }
 }

@@ -17,16 +17,10 @@ public class PetManager {
     private final FileConfiguration cfg;
 
     private final Map<UUID, Map<Integer, Pet>> pets = new HashMap<>();
-
-    // ✅ key-object i.p.v. Objects.hash
     private final Map<PetKey, ActivePet> active = new HashMap<>();
     private final Map<PetKey, Integer> petWalkProgress = new HashMap<>();
 
-    // ✅ autosave/dirty
     private volatile boolean dirty = false;
-
-    @Deprecated
-    private final Map<UUID, Integer> walkProgress = new HashMap<>(); // niet meer gebruikt
 
     public PetManager(Pets plugin){
         this.plugin = plugin;
@@ -34,10 +28,8 @@ public class PetManager {
         this.cfg = YamlConfiguration.loadConfiguration(file);
         load();
 
-        // Minute tick: loot & uurloon & quest-ready meldingen
         Bukkit.getScheduler().runTaskTimer(plugin, this::tickMinute, 20L*60, 20L*60);
 
-        // ✅ Autosave (1x per minuut)
         Bukkit.getScheduler().runTaskTimer(plugin, () -> {
             if (dirty) {
                 dirty = false;
@@ -50,15 +42,23 @@ public class PetManager {
 
     private void load(){
         if(!cfg.isConfigurationSection("players")) return;
+
         for(String uuidStr : Objects.requireNonNull(cfg.getConfigurationSection("players")).getKeys(false)){
             UUID u = UUID.fromString(uuidStr);
             Map<Integer, Pet> map = new HashMap<>();
-            for(String idStr : Objects.requireNonNull(cfg.getConfigurationSection("players."+uuidStr)).getKeys(false)){
-                Map<String,Object> raw =
-                        Objects.requireNonNull(cfg.getConfigurationSection("players."+uuidStr+"."+idStr)).getValues(false);
+
+            var sec = cfg.getConfigurationSection("players."+uuidStr);
+            if (sec == null) continue;
+
+            for(String idStr : sec.getKeys(false)){
+                var psec = cfg.getConfigurationSection("players."+uuidStr+"."+idStr);
+                if (psec == null) continue;
+
+                Map<String,Object> raw = psec.getValues(false);
                 Pet p = Pet.deserialize(raw);
                 map.put(p.getId(), p);
             }
+
             pets.put(u, map);
         }
     }
@@ -144,13 +144,18 @@ public class PetManager {
 
     public record PetKey(UUID owner, int id) {}
 
-    /* ====== (Legacy) speler-wandel XP – UIT ====== */
-    @Deprecated
-    public void addWalkProgress(UUID player, int blocks){
-        // NIETS meer doen
+    /* ==================== WALK: speler -> actieve pet(s) ==================== */
+
+    public void addWalkProgress(UUID owner, int blocks){
+        if (blocks <= 0) return;
+
+        for (Pet pet : getPets(owner)) {
+            if (pet.isSpawned()) {
+                addWalkProgressForPet(pet, blocks);
+            }
+        }
     }
 
-    /* ====== Wandel-quest per PET ====== */
     public void addWalkProgressForPet(Pet pet, int blocks){
         PetKey k = key(pet);
         int total = petWalkProgress.getOrDefault(k, 0) + blocks;
@@ -208,7 +213,6 @@ public class PetManager {
         return true;
     }
 
-    /* ====== Minute tick: ZOEKEN loot, uurloon, quest-ready ====== */
     private void tickMinute(){
         long now = System.currentTimeMillis();
         final long cdMs = plugin.getConfig().getInt("walk.quest-cooldown-minutes", 30) * 60_000L;
@@ -224,7 +228,6 @@ public class PetManager {
                 ActivePet ap = active.get(key(p));
                 if (ap == null) continue;
 
-                // ✅ ZOEKEN: geeft loot uit loot.yml (Dieren Loot Config) om de zoveel tijd
                 if (ap.elapsedMinutesSinceLoot() >= p.lootIntervalMinutes()){
                     plugin.getItemsManager().giveRandomLootImmediate(owner, p.getUpZoeken());
                     ap.resetLootTimer();
@@ -232,7 +235,6 @@ public class PetManager {
                     markDirty();
                 }
 
-                // Uurloon
                 if (now - p.getLastHourly() >= 60L*60_000L){
                     int base = plugin.getConfig().getInt("hourly.base-amount", 25);
                     int amount = Math.max(1, base * p.getUpUurloon());
@@ -244,7 +246,6 @@ public class PetManager {
                     markDirty();
                 }
 
-                // “Uitlaten” melding
                 if ((now - p.getLastWalkQuest()) >= cdMs && !p.isWalkQuestReadyNotified()){
                     p.setWalkQuestReadyNotified(true);
                     player.sendMessage("§e" + p.getName() + " §7moet uitgelaten worden.");
