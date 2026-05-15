@@ -9,27 +9,32 @@ import org.bukkit.persistence.PersistentDataType;
 
 /**
  * /petmenutoken
- * Wordt door ItemsAdder uitgevoerd (as_console: false).
- * Zet een 2s token zodat /pet menu meteen erna toegestaan is.
+ *
+ * Wordt bijvoorbeeld door ItemsAdder uitgevoerd.
+ * Zet een korte token zodat /pet menu meteen daarna toegestaan is.
  */
 public class PetMenuTokenCommand implements BasicCommand {
-    private final Pets plugin;
-    public static final String KEY_ALLOW_UNTIL = "pet-menu-allow-until";
 
-    public PetMenuTokenCommand(Pets plugin) { this.plugin = plugin; }
+    private final Pets plugin;
+
+    public PetMenuTokenCommand(Pets plugin) {
+        this.plugin = plugin;
+    }
 
     @Override
     public void execute(CommandSourceStack source, String[] args) {
         CommandSender sender = source.getSender();
-        if (!(sender instanceof Player p)) return; // alleen logisch voor spelers
+
+        if (!(sender instanceof Player p)) {
+            return;
+        }
 
         long until = System.currentTimeMillis() + 2000L;
+
         p.getPersistentDataContainer().set(
-                Pets.key(KEY_ALLOW_UNTIL),
+                Pets.key(Pets.KEY_MENU_ALLOW_UNTIL),
                 PersistentDataType.LONG,
                 until
         );
-        // Optioneel: geen chatspam
-        // p.sendMessage("§7Pet menu token gezet.");
     }
 }

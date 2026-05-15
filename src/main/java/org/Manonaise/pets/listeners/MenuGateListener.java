@@ -4,8 +4,10 @@ import dev.lone.itemsadder.api.CustomStack;
 import dev.lone.itemsadder.api.Events.CustomBlockInteractEvent;
 import dev.lone.itemsadder.api.Events.FurnitureInteractEvent;
 import org.Manonaise.pets.Pets;
+import org.Manonaise.pets.menu.PetMenu;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -14,54 +16,88 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 
 public class MenuGateListener implements Listener {
+
     private final Pets plugin;
-    public static final String KEY_ALLOW_UNTIL = "pet-menu-allow-until";
 
     public MenuGateListener(Pets plugin) {
         this.plugin = plugin;
     }
 
-    /* ---------------- 1) Klik op geplaatst CUSTOM BLOCK ---------------- */
-    @EventHandler(ignoreCancelled = false, priority = EventPriority.LOWEST)
+    /**
+     * Klik op geplaatst ItemsAdder custom block.
+     * Bijvoorbeeld: topia:dierenmand
+     */
+    @EventHandler(ignoreCancelled = false, priority = EventPriority.HIGHEST)
     public void onCustomBlockInteract(CustomBlockInteractEvent e) {
         if (!isIaPresent()) return;
+
         String targetId = cfgId();
         if (targetId.isEmpty()) return;
 
         try {
-            String id = e.getNamespacedID(); // bv. "master_bedroom_furniture_v1:basket"
-            if (id != null && id.equalsIgnoreCase(targetId)) {
-                allowNow(e.getPlayer());
-                // Open direct (optioneel, dan ben je 100% onafhankelijk van IA-commands):
-                // e.getPlayer().performCommand("pet menu");
+            String id = e.getNamespacedID();
+
+            if (id == null || !id.equalsIgnoreCase(targetId)) {
+                return;
             }
-        } catch (Throwable ignored) {}
+
+            Player player = e.getPlayer();
+
+            allowNow(player);
+            openPetMenu(player);
+
+        } catch (Throwable ignored) {
+        }
     }
 
-    /* ---------------- 2) Klik op geplaatste FURNITURE ------------------ */
-    @EventHandler(ignoreCancelled = false, priority = EventPriority.LOWEST)
+    /**
+     * Klik op geplaatste ItemsAdder furniture.
+     * Voor als je dierenmand ooit als furniture werkt.
+     */
+    @EventHandler(ignoreCancelled = false, priority = EventPriority.HIGHEST)
     public void onFurnitureInteract(FurnitureInteractEvent e) {
         if (!isIaPresent()) return;
+
         String targetId = cfgId();
         if (targetId.isEmpty()) return;
 
         try {
             String id = null;
-            try { id = e.getNamespacedID(); } catch (Throwable ignored) {}
+
+            try {
+                id = e.getNamespacedID();
+            } catch (Throwable ignored) {
+            }
+
             if (id == null && e.getFurniture() != null) {
-                try { id = e.getFurniture().getNamespacedID(); } catch (Throwable ignored) {}
+                try {
+                    id = e.getFurniture().getNamespacedID();
+                } catch (Throwable ignored) {
+                }
             }
-            if (id != null && id.equalsIgnoreCase(targetId)) {
-                allowNow(e.getPlayer());
-                // e.getPlayer().performCommand("pet menu"); // ← optioneel
+
+            if (id == null || !id.equalsIgnoreCase(targetId)) {
+                return;
             }
-        } catch (Throwable ignored) {}
+
+            Player player = e.getPlayer();
+
+            allowNow(player);
+            openPetMenu(player);
+
+        } catch (Throwable ignored) {
+        }
     }
 
-    /* --------------- 3) (Optioneel) item-in-hand fallback -------------- */
+    /**
+     * Fallback: wanneer speler met het dierenmand-item in de hand klikt.
+     * Dit opent NIET het menu, maar zet alleen tijdelijk toestemming.
+     * Het echte menu openen gebeurt bij klikken op het geplaatste block.
+     */
     @EventHandler(ignoreCancelled = false, priority = EventPriority.LOWEST)
-    public void onInteract(PlayerInteractEvent e) {
+    public void onInteractWithItem(PlayerInteractEvent e) {
         if (!isIaPresent()) return;
+
         ItemStack hand = e.getItem();
         if (hand == null || hand.getType() == Material.AIR) return;
 
@@ -70,28 +106,40 @@ public class MenuGateListener implements Listener {
 
         try {
             CustomStack cs = CustomStack.byItemStack(hand);
+
             if (cs != null && cs.getNamespacedID().equalsIgnoreCase(targetId)) {
                 allowNow(e.getPlayer());
-                // e.getPlayer().performCommand("pet menu"); // ← optioneel
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {
+        }
     }
 
-    /* -------------------------------- helpers -------------------------- */
+    private void openPetMenu(Player player) {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!player.isOnline()) return;
+
+            new PetMenu(plugin, player).open(player);
+        });
+    }
+
     private boolean isIaPresent() {
         return Bukkit.getPluginManager().getPlugin("ItemsAdder") != null;
     }
 
     private String cfgId() {
-        String id = plugin.getConfig().getString("menu.itemsadder_id", "");
+        String id = plugin.getConfig().getString(
+                "menu.itemsadder_id",
+                plugin.getConfig().getString("basket.itemsadder_id", "topia:dierenmand")
+        );
+
         return id == null ? "" : id.trim();
     }
 
-    /** Zet 2s venster waarin /pet menu toegestaan is. */
-    private void allowNow(org.bukkit.entity.Player p) {
+    private void allowNow(Player player) {
         long until = System.currentTimeMillis() + 2000L;
-        p.getPersistentDataContainer().set(
-                Pets.key(KEY_ALLOW_UNTIL),
+
+        player.getPersistentDataContainer().set(
+                Pets.key(Pets.KEY_MENU_ALLOW_UNTIL),
                 PersistentDataType.LONG,
                 until
         );

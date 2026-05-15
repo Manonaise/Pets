@@ -1,33 +1,45 @@
-# Pets plugin config
 loot:
   base-minutes: 30
+
 wash:
   xp: 20
+  cooldown-seconds: 60
+
 walk:
   xp-per-block: 1
+  quest-step-blocks: 100
+  quest-xp: 25
+  quest-cooldown-minutes: 30
+
 feed:
   xp: 10
+
 drink:
   xp: 10
+
 whistle:
   range-teleport: 5
+
 follow:
   max-range: 40
   teleport-range: 15
+
 hourly:
   base-amount: 25
   command: "eco give %player% %amount%"
-basket:
-  mode: ENTITY
-  itemsadder_id: "master_bedroom_furniture_v1:basket"
 
+basket:
+  itemsadder_id: "topia:dierenmand"
 
 menu:
-  itemsadder_id: "master_bedroom_furniture_v1:basket"
+  itemsadder_id: "topia:dierenmand"
 
 grinden:
-  mining-speed-per-level: 0.005  # 0.5% per level boven 1
-  mining-speed-cap: 0.05         # max 5%
+  auraskills-per-level: 0.005
+  auraskills-cap: 0.05
 
+auraskills:
+  trait-key: "mining_speed"
 
-
+nametag:
+  extra-y: 0.08
