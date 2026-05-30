@@ -1,5 +1,7 @@
 loot:
   base-minutes: 30
+  reduce-minutes-per-zoeken-level: 2
+  minimum-minutes: 5
 
 wash:
   xp: 20
@@ -13,9 +15,13 @@ walk:
 
 feed:
   xp: 10
+  base-cooldown-minutes: 10
+  extra-minutes-per-eten-level: 1
 
 drink:
   xp: 10
+  base-cooldown-minutes: 10
+  extra-minutes-per-water-level: 1
 
 whistle:
   range-teleport: 5
@@ -25,6 +31,7 @@ follow:
   teleport-range: 15
 
 hourly:
+  cooldown-minutes: 60
   base-amount: 25
   command: "eco give %player% %amount%"
 
@@ -35,8 +42,8 @@ menu:
   itemsadder_id: "topia:dierenmand"
 
 grinden:
-  auraskills-per-level: 0.005
-  auraskills-cap: 0.05
+  mining-speed-per-level: 0.005
+  mining-speed-cap: 0.05
 
 auraskills:
   trait-key: "mining_speed"

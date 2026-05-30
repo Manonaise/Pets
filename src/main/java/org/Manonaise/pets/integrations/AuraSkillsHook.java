@@ -16,11 +16,10 @@ public class AuraSkillsHook {
     private final Pets plugin;
 
     private final Plugin auraPlugin;
-    private final ClassLoader auraCl;
+    private final ClassLoader auraClassLoader;
 
     private final String traitKey;
 
-    // cached reflection
     private final Class<?> apiClass;
     private final Class<?> registryClass;
     private final Class<?> namespacedIdClass;
@@ -39,31 +38,30 @@ public class AuraSkillsHook {
     private final Method userAddTraitModifierMethod;
     private final Method userRemoveTraitModifierByNameMethod;
 
-    private final Constructor<?> traitModifierCtor4;
-    private final Method setNonPersistentNoArgs; // AuraSkills 2.3.6: setNonPersistent()
+    private final Constructor<?> traitModifierConstructor;
+    private final Method setNonPersistentMethod;
 
     @SuppressWarnings("unchecked")
     public AuraSkillsHook(Pets plugin) {
         this.plugin = plugin;
 
         this.auraPlugin = Bukkit.getPluginManager().getPlugin("AuraSkills");
-        if (auraPlugin == null) {
-            // ✅ geen fallback
+
+        if (auraPlugin == null || !auraPlugin.isEnabled()) {
             throw new RuntimeException("AuraSkills is verplicht maar niet gevonden.");
         }
 
-        this.auraCl = auraPlugin.getClass().getClassLoader();
+        this.auraClassLoader = auraPlugin.getClass().getClassLoader();
         this.traitKey = plugin.getConfig().getString("auraskills.trait-key", "mining_speed");
 
         try {
-            // Load AuraSkills API classes from AuraSkills classloader (niet van Pets!)
-            apiClass = Class.forName("dev.aurelium.auraskills.api.AuraSkillsApi", true, auraCl);
-            registryClass = Class.forName("dev.aurelium.auraskills.api.registry.GlobalRegistry", true, auraCl);
-            namespacedIdClass = Class.forName("dev.aurelium.auraskills.api.registry.NamespacedId", true, auraCl);
-            traitClass = Class.forName("dev.aurelium.auraskills.api.trait.Trait", true, auraCl);
-            traitModifierClass = Class.forName("dev.aurelium.auraskills.api.trait.TraitModifier", true, auraCl);
-            skillsUserClass = Class.forName("dev.aurelium.auraskills.api.user.SkillsUser", true, auraCl);
-            operationEnumClass = Class.forName("dev.aurelium.auraskills.api.util.AuraSkillsModifier$Operation", true, auraCl);
+            apiClass = Class.forName("dev.aurelium.auraskills.api.AuraSkillsApi", true, auraClassLoader);
+            registryClass = Class.forName("dev.aurelium.auraskills.api.registry.GlobalRegistry", true, auraClassLoader);
+            namespacedIdClass = Class.forName("dev.aurelium.auraskills.api.registry.NamespacedId", true, auraClassLoader);
+            traitClass = Class.forName("dev.aurelium.auraskills.api.trait.Trait", true, auraClassLoader);
+            traitModifierClass = Class.forName("dev.aurelium.auraskills.api.trait.TraitModifier", true, auraClassLoader);
+            skillsUserClass = Class.forName("dev.aurelium.auraskills.api.user.SkillsUser", true, auraClassLoader);
+            operationEnumClass = Class.forName("dev.aurelium.auraskills.api.util.AuraSkillsModifier$Operation", true, auraClassLoader);
 
             apiGetMethod = apiClass.getMethod("get");
             apiGetUserMethod = apiClass.getMethod("getUser", UUID.class);
@@ -75,84 +73,143 @@ public class AuraSkillsHook {
             userAddTraitModifierMethod = skillsUserClass.getMethod("addTraitModifier", traitModifierClass);
             userRemoveTraitModifierByNameMethod = skillsUserClass.getMethod("removeTraitModifier", String.class);
 
-            // TraitModifier(String, Trait, double, Operation)
-            traitModifierCtor4 = traitModifierClass.getConstructor(String.class, traitClass, double.class, operationEnumClass);
+            traitModifierConstructor = traitModifierClass.getConstructor(
+                    String.class,
+                    traitClass,
+                    double.class,
+                    operationEnumClass
+            );
 
-            // AuraSkillsModifier#setNonPersistent() (geen args in 2.3.6)
             Method tmp;
+
             try {
                 tmp = traitModifierClass.getMethod("setNonPersistent");
-            } catch (NoSuchMethodException ex) {
+            } catch (NoSuchMethodException ignored) {
                 tmp = null;
             }
-            setNonPersistentNoArgs = tmp;
+
+            setNonPersistentMethod = tmp;
 
         } catch (Throwable t) {
-            throw new RuntimeException(
-                    "AuraSkills hook kon niet initialiseren. " +
-                            "Je AuraSkills jar lijkt de API classes niet te exposen of is niet correct geladen.",
-                    t
-            );
+            throw new RuntimeException("AuraSkills hook kon niet initialiseren.", t);
         }
     }
 
+    public boolean isAvailable() {
+        return auraPlugin != null && auraPlugin.isEnabled();
+    }
+
     /**
-     * amount = percentage (0.01 = 1%)
+     * amount is percentage als decimal.
+     *
+     * Voorbeelden:
+     * 0.005 = +0.5%
+     * 0.01  = +1%
+     * 0.05  = +5%
      */
+    @SuppressWarnings("unchecked")
     public void setMiningSpeedBonus(Player player, Pet pet, double amount) {
+        if (player == null || !player.isOnline()) return;
+        if (pet == null) return;
+        if (!isAvailable()) return;
+
         try {
             Object api = apiGetMethod.invoke(null);
             Object user = apiGetUserMethod.invoke(api, player.getUniqueId());
+
             if (user == null) return;
 
-            String modName = modifierName(pet);
+            String modifierName = modifierName(pet);
 
-            // altijd oude weg
-            userRemoveTraitModifierByNameMethod.invoke(user, modName);
+            // Altijd oude modifier eerst verwijderen, zodat upgrades meteen goed werken.
+            userRemoveTraitModifierByNameMethod.invoke(user, modifierName);
 
-            if (amount <= 0.0) return;
+            if (amount <= 0.0) {
+                return;
+            }
 
             Object registry = apiGetGlobalRegistryMethod.invoke(api);
-            Object nid = namespacedIdFromDefaultMethod.invoke(null, traitKey);
+            Object namespacedId = namespacedIdFromDefaultMethod.invoke(null, traitKey);
+            Object trait = registryGetTraitMethod.invoke(registry, namespacedId);
 
-            Object trait = registryGetTraitMethod.invoke(registry, nid);
             if (trait == null) {
-                throw new RuntimeException("AuraSkills trait '" + traitKey + "' bestaat niet. Pas auraskills.trait-key aan.");
+                throw new RuntimeException("AuraSkills trait bestaat niet: " + traitKey);
             }
 
-            // Operation.ADD_PERCENT
-            Object addPercent = Enum.valueOf((Class<? extends Enum>) operationEnumClass, "ADD_PERCENT");
+            Object operation = Enum.valueOf(
+                    (Class<? extends Enum>) operationEnumClass,
+                    "ADD_PERCENT"
+            );
 
-            Object mod = traitModifierCtor4.newInstance(modName, trait, amount, addPercent);
+            Object modifier = traitModifierConstructor.newInstance(
+                    modifierName,
+                    trait,
+                    amount,
+                    operation
+            );
 
-            // non persistent (indien aanwezig)
-            if (setNonPersistentNoArgs != null) {
-                try { setNonPersistentNoArgs.invoke(mod); } catch (Throwable ignored) {}
+            if (setNonPersistentMethod != null) {
+                try {
+                    setNonPersistentMethod.invoke(modifier);
+                } catch (Throwable ignored) {
+                }
             }
 
-            userAddTraitModifierMethod.invoke(user, mod);
+            userAddTraitModifierMethod.invoke(user, modifier);
 
-        } catch (RuntimeException re) {
-            throw re;
         } catch (Throwable t) {
-            throw new RuntimeException("AuraSkills setMiningSpeedBonus faalde (reflection).", t);
+            throw new RuntimeException("AuraSkills mining speed modifier kon niet gezet worden.", t);
         }
     }
 
     public void removeMiningSpeedBonus(Player player, Pet pet) {
+        if (player == null) return;
+        if (pet == null) return;
+        if (!isAvailable()) return;
+
         try {
             Object api = apiGetMethod.invoke(null);
             Object user = apiGetUserMethod.invoke(api, player.getUniqueId());
+
             if (user == null) return;
 
             userRemoveTraitModifierByNameMethod.invoke(user, modifierName(pet));
+
         } catch (Throwable ignored) {
         }
     }
 
+    public void removeAllMiningSpeedBonuses(Player player) {
+        if (player == null) return;
+
+        for (Pet pet : plugin.getPetManager().getPets(player.getUniqueId())) {
+            removeMiningSpeedBonus(player, pet);
+        }
+    }
+
+    /**
+     * Oude methodes blijven bestaan zodat andere code niet crasht.
+     * Ze verwijzen nu gewoon naar mining speed.
+     */
+    public void setGrindingXpBonus(Player player, Pet pet, double percent) {
+        double amount = percent / 100.0;
+        setMiningSpeedBonus(player, pet, amount);
+    }
+
+    public void removeGrindingXpBonus(Player player, Pet pet) {
+        removeMiningSpeedBonus(player, pet);
+    }
+
+    public void removeAllGrindingXpBonuses(Player player) {
+        removeAllMiningSpeedBonuses(player);
+    }
+
     private String modifierName(Pet pet) {
-        UUID id = UUID.nameUUIDFromBytes(("pets-grinden-" + pet.getOwner() + ":" + pet.getId())
-                .getBytes(StandardCharsets.UTF_8));
-        return "pets_grinden_" + id;
+        UUID id = UUID.nameUUIDFromBytes(
+                ("pets-mining-speed-" + pet.getOwner() + ":" + pet.getId())
+                        .getBytes(StandardCharsets.UTF_8)
+        );
+
+        return "pets_mining_speed_" + id;
     }
 }

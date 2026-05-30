@@ -40,12 +40,13 @@ public class ActivePet {
 
     private boolean gaveUp = false;
     private boolean following = false;
+    private boolean manualSitting = false;
 
     private int lastShownLevel = -1;
     private String lastShownName = null;
 
     private int lastGrindLevel = -1;
-    private double lastAppliedAmount = Double.NaN;
+    private double lastAppliedMiningSpeed = Double.NaN;
 
     private final Location tagLocCache = new Location(null, 0, 0, 0);
 
@@ -88,7 +89,7 @@ public class ActivePet {
         }
 
         ensureNameTag(true);
-        updateMiningBoost(true);
+        updateMiningSpeedBoost(true);
 
         nameTask = Bukkit.getScheduler().scheduleSyncRepeatingTask(plugin, () -> {
             if (entity == null || !entity.isValid() || entity.isDead() || !owner.isOnline()) {
@@ -115,13 +116,13 @@ public class ActivePet {
                 updateNameTagText();
             }
 
-            updateMiningBoost(false);
+            updateMiningSpeedBoost(false);
 
             if (isInWater(entity.getLocation())) {
                 long now = System.currentTimeMillis();
-                long cd = plugin.getConfig().getInt("wash.cooldown-seconds", 60) * 1000L;
+                long cooldown = plugin.getConfig().getInt("wash.cooldown-seconds", 60) * 1000L;
 
-                if (now - pet.getLastWashed() >= cd) {
+                if (now - pet.getLastWashed() >= cooldown) {
                     pet.setLastWashed(now);
                     plugin.getPetManager().awardWashXp(pet);
                 }
@@ -130,6 +131,40 @@ public class ActivePet {
             followTick();
 
         }, 10L, 10L);
+    }
+
+    private void updateMiningSpeedBoost(boolean force) {
+        int grindLevel = pet.getUpGrinden();
+
+        double perLevel = plugin.getConfig().getDouble("grinden.mining-speed-per-level", 0.005);
+        double cap = plugin.getConfig().getDouble("grinden.mining-speed-cap", 0.05);
+
+        double amount = 0.0;
+
+        if (grindLevel > 1) {
+            amount = (grindLevel - 1) * perLevel;
+
+            if (amount > cap) {
+                amount = cap;
+            }
+        }
+
+        if (!force && grindLevel == lastGrindLevel && Double.compare(amount, lastAppliedMiningSpeed) == 0) {
+            return;
+        }
+
+        lastGrindLevel = grindLevel;
+        lastAppliedMiningSpeed = amount;
+
+        try {
+            var hook = plugin.getAuraSkillsHook();
+
+            if (hook != null) {
+                hook.setMiningSpeedBonus(owner, pet, amount);
+            }
+        } catch (Throwable t) {
+            plugin.getLogger().warning("Kon mining speed boost niet toepassen: " + t.getMessage());
+        }
     }
 
     private void applyNoDamageFlags(Entity e) {
@@ -238,7 +273,6 @@ public class ActivePet {
 
     private Component petNameComponent() {
         Component nm = LEGACY.deserialize(pet.getName());
-
         return nm.append(Component.text(" §7(Lv." + pet.getLevel() + ")"));
     }
 
@@ -270,36 +304,6 @@ public class ActivePet {
         if (a == null || b == null) return false;
 
         return a.equals(b);
-    }
-
-    private void updateMiningBoost(boolean force) {
-        int g = pet.getUpGrinden();
-
-        double perLevel = plugin.getConfig().getDouble("grinden.auraskills-per-level", 0.01);
-        double cap = plugin.getConfig().getDouble("grinden.auraskills-cap", 0.10);
-
-        double amount = 0.0;
-
-        if (g > 1) {
-            amount = (g - 1) * perLevel;
-
-            if (amount > cap) {
-                amount = cap;
-            }
-        }
-
-        if (!force && g == lastGrindLevel && Double.compare(amount, lastAppliedAmount) == 0) {
-            return;
-        }
-
-        lastGrindLevel = g;
-        lastAppliedAmount = amount;
-
-        var hook = plugin.getAuraSkillsHook();
-
-        if (hook != null) {
-            hook.setMiningSpeedBonus(owner, pet, amount);
-        }
     }
 
     public int elapsedMinutesSinceLoot() {
@@ -367,11 +371,15 @@ public class ActivePet {
     }
 
     private void followTick() {
-        if (entity instanceof Sittable s && s.isSitting()) {
+        if (manualSitting || isVanillaSitting()) {
             stopPathfindingIfMob();
 
-            entity.setVelocity(new Vector());
+            if (entity != null) {
+                entity.setVelocity(new Vector(0, 0, 0));
+            }
+
             following = false;
+            gaveUp = false;
 
             return;
         }
@@ -379,17 +387,17 @@ public class ActivePet {
         Location pl = owner.getLocation();
         Location el = entity.getLocation();
 
-        double d2 = pl.distanceSquared(el);
+        double distanceSquared = pl.distanceSquared(el);
 
         final double keepDistance = 2.0;
         final int maxRange = plugin.getConfig().getInt("follow.max-range", 40);
         final int startRange = plugin.getConfig().getInt("follow.teleport-range", 15);
 
-        final double keepSq = keepDistance * keepDistance;
-        final double startSq = startRange * startRange;
-        final double stopSq = maxRange * maxRange;
+        final double keepSquared = keepDistance * keepDistance;
+        final double startSquared = startRange * startRange;
+        final double stopSquared = maxRange * maxRange;
 
-        if (d2 > stopSq) {
+        if (distanceSquared > stopSquared) {
             if (!gaveUp) {
                 gaveUp = true;
                 owner.sendMessage("§7" + pet.getName() + " is te ver weg en geeft het op. Gebruik §b/pet whistle§7.");
@@ -397,25 +405,23 @@ public class ActivePet {
 
             stopPathfindingIfMob();
 
-            entity.setVelocity(new Vector());
+            entity.setVelocity(new Vector(0, 0, 0));
             following = false;
 
             return;
         }
 
         if (!following) {
-            if (d2 <= startSq) {
+            if (distanceSquared <= startSquared) {
                 following = true;
             } else {
                 return;
             }
         }
 
-        if (d2 <= keepSq) {
+        if (distanceSquared <= keepSquared) {
             stopPathfindingIfMob();
-
-            entity.setVelocity(new Vector());
-
+            entity.setVelocity(new Vector(0, 0, 0));
             return;
         }
 
@@ -437,9 +443,26 @@ public class ActivePet {
         }
     }
 
-    private void velocityFallback(Location pl, Location el) {
-        Vector dir = pl.toVector()
-                .subtract(el.toVector())
+    private boolean isVanillaSitting() {
+        if (entity instanceof Sittable s) {
+            try {
+                return s.isSitting();
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private void velocityFallback(Location playerLocation, Location entityLocation) {
+        if (manualSitting) {
+            entity.setVelocity(new Vector(0, 0, 0));
+            return;
+        }
+
+        Vector dir = playerLocation.toVector()
+                .subtract(entityLocation.toVector())
                 .normalize()
                 .multiply(0.25 + (pet.getUpSnelheid() - 1) * 0.05)
                 .multiply(pet.penaltyMultiplier());
@@ -457,6 +480,18 @@ public class ActivePet {
                 mob.getPathfinder().stopPathfinding();
             } catch (Throwable ignored) {
             }
+
+            try {
+                mob.setTarget(null);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        if (entity instanceof Creature c) {
+            try {
+                c.setTarget(null);
+            } catch (Throwable ignored) {
+            }
         }
     }
 
@@ -470,6 +505,8 @@ public class ActivePet {
     }
 
     public void whistleSummon() {
+        if (entity == null || !entity.isValid() || entity.isDead()) return;
+
         Location rnd = owner.getLocation().clone().add(
                 -1 + Math.random() * 2,
                 0,
@@ -499,9 +536,32 @@ public class ActivePet {
     }
 
     public void setSitting(boolean sit) {
+        this.manualSitting = sit;
+
         if (entity instanceof Sittable s) {
-            s.setSitting(sit);
+            try {
+                s.setSitting(sit);
+            } catch (Throwable ignored) {
+            }
         }
+
+        if (sit) {
+            stopPathfindingIfMob();
+
+            if (entity != null) {
+                try {
+                    entity.setVelocity(new Vector(0, 0, 0));
+                } catch (Throwable ignored) {
+                }
+            }
+
+            following = false;
+            gaveUp = false;
+        }
+    }
+
+    public boolean isSitting() {
+        return manualSitting || isVanillaSitting();
     }
 
     public void remove() {
@@ -534,7 +594,11 @@ public class ActivePet {
         }
 
         if (entity != null) {
-            entity.remove();
+            try {
+                entity.remove();
+            } catch (Throwable ignored) {
+            }
+
             entity = null;
         }
     }

@@ -36,11 +36,11 @@ public class PetDetailMenu implements InventoryHolder {
         inv.setItem(12, new ItemBuilder(Material.SUGAR).name("§fSnelheid §7(" + pet.getUpSnelheid()+"/10)")
                 .lore("§7Sneller volgen").build());
         inv.setItem(13, new ItemBuilder(Material.CHEST).name("§6Zoeken §7(" + pet.getUpZoeken()+"/10)")
-                .lore("§7Vaker/betere loot").build());
+                .lore("§7Spullen vinden").build());
         inv.setItem(14, new ItemBuilder(Material.IRON_PICKAXE).name("§aGrinden §7(" + pet.getUpGrinden()+"/10)")
-                .lore("§7Meer XP uit acties").build());
+                .lore("§7Krijg een Mining speed boost").build());
         inv.setItem(15, new ItemBuilder(Material.GOLD_INGOT).name("§eUurloon §7(" + pet.getUpUurloon()+"/10)")
-                .lore("§7Beloning via eco").build());
+                .lore("§7Laat me geld brengen").build());
 
         // Onderste rij = upgrade-knoppen (één onder elke info-tegel)
         inv.setItem(19, upgradeButton("up_water",   pet.getUpWater()   < 10));
