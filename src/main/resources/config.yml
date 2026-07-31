@@ -50,3 +50,23 @@ auraskills:
 
 nametag:
   extra-y: 0.08
+
+food-categories:
+  katten:
+    display-name: "Kattenvoer"
+    itemsadder-id: "topia:kattenvoer"
+    pet-types:
+      - CAT
+
+  honden:
+    display-name: "Hondenvoer"
+    itemsadder-id: "topia:hondenvoer"
+    pet-types:
+      - WOLF
+
+  konijn:
+    display-name: "Konijnenvoer"
+    itemsadder-id: "topia:wortel"
+    pet-types:
+      - MYTHIC
+

@@ -3,10 +3,10 @@ package org.Manonaise.pets.commands;
 import dev.lone.itemsadder.api.CustomStack;
 import io.papermc.paper.command.brigadier.BasicCommand;
 import io.papermc.paper.command.brigadier.CommandSourceStack;
-import net.kyori.adventure.text.Component;
 import org.Manonaise.pets.Pets;
 import org.Manonaise.pets.data.Pet;
 import org.Manonaise.pets.data.PetType;
+import org.Manonaise.pets.items.PetFoodManager;
 import org.Manonaise.pets.menu.ItemsMenu;
 import org.Manonaise.pets.menu.PetMenu;
 import org.bukkit.Bukkit;
@@ -16,7 +16,6 @@ import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Cat;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
 
 import java.util.ArrayList;
@@ -30,9 +29,11 @@ import java.util.stream.Collectors;
 public class PetCommand implements BasicCommand {
 
     private final Pets plugin;
+    private final PetFoodManager foodManager;
 
     public PetCommand(Pets plugin) {
         this.plugin = plugin;
+        this.foodManager = new PetFoodManager(plugin);
     }
 
     @Override
@@ -74,12 +75,14 @@ public class PetCommand implements BasicCommand {
         }
 
         Player target = Bukkit.getPlayerExact(args[1]);
+
         if (target == null) {
             sender.sendMessage(ChatColor.RED + "Speler niet online.");
             return;
         }
 
         PetType type = PetType.from(args[2]);
+
         if (type == null || type == PetType.MYTHIC) {
             sender.sendMessage(ChatColor.RED + "Onbekend dier. Opties: " +
                     Arrays.stream(PetType.values()).map(PetType::name).collect(Collectors.joining(", ")));
@@ -87,6 +90,7 @@ public class PetCommand implements BasicCommand {
         }
 
         List<String> tail = new ArrayList<>(Arrays.asList(args).subList(3, args.length));
+
         if (tail.isEmpty()) {
             sender.sendMessage(ChatColor.RED + "Je moet een naam opgeven.");
             return;
@@ -294,15 +298,30 @@ public class PetCommand implements BasicCommand {
         }
 
         Player target;
+        PetFoodManager.FoodCategory category;
         int amount = 1;
 
-        if (args.length == 1) {
+        if (args.length < 2) {
+            sender.sendMessage(ChatColor.YELLOW + "Gebruik: /pet givefood <categorie> [aantal]");
+            sender.sendMessage(ChatColor.YELLOW + "Of: /pet givefood <speler> <categorie> [aantal]");
+            sender.sendMessage(ChatColor.GRAY + "Categorieën: " + String.join(", ", foodManager.getCategoryKeys()));
+            return;
+        }
+
+        PetFoodManager.FoodCategory directCategory = foodManager.getCategory(args[1]);
+
+        if (directCategory != null) {
             if (!(sender instanceof Player p)) {
-                sender.sendMessage(ChatColor.YELLOW + "/pet givefood <speler> [aantal]");
+                sender.sendMessage(ChatColor.YELLOW + "Console gebruik: /pet givefood <speler> <categorie> [aantal]");
                 return;
             }
 
             target = p;
+            category = directCategory;
+
+            if (args.length >= 3) {
+                amount = parseAmount(args[2]);
+            }
         } else {
             target = Bukkit.getPlayerExact(args[1]);
 
@@ -311,27 +330,46 @@ public class PetCommand implements BasicCommand {
                 return;
             }
 
-            if (args.length >= 3) {
-                try {
-                    amount = Math.max(1, Integer.parseInt(args[2]));
-                } catch (Exception ignored) {
-                }
+            if (args.length < 3) {
+                sender.sendMessage(ChatColor.YELLOW + "Gebruik: /pet givefood <speler> <categorie> [aantal]");
+                sender.sendMessage(ChatColor.GRAY + "Categorieën: " + String.join(", ", foodManager.getCategoryKeys()));
+                return;
+            }
+
+            category = foodManager.getCategory(args[2]);
+
+            if (category == null) {
+                sender.sendMessage(ChatColor.RED + "Onbekende voer-categorie.");
+                sender.sendMessage(ChatColor.GRAY + "Categorieën: " + String.join(", ", foodManager.getCategoryKeys()));
+                return;
+            }
+
+            if (args.length >= 4) {
+                amount = parseAmount(args[3]);
             }
         }
 
-        ItemStack food = new ItemStack(Material.IRON_INGOT, amount);
-        ItemMeta meta = food.getItemMeta();
+        ItemStack food = foodManager.createFood(sender, category, amount);
 
-        meta.lore(List.of(Component.text("Dieren eten")));
-        food.setItemMeta(meta);
+        if (food == null) {
+            return;
+        }
 
         Map<Integer, ItemStack> leftover = target.getInventory().addItem(food);
         leftover.values().forEach(lf -> target.getWorld().dropItemNaturally(target.getLocation(), lf));
 
-        sender.sendMessage(ChatColor.GREEN + "Dieren-eten gegeven aan " + target.getName() + " x" + amount + ".");
+        sender.sendMessage(ChatColor.GREEN + category.displayName() + " gegeven aan " + target.getName() + " x" + amount + ".");
 
         if (sender != target) {
-            target.sendMessage(ChatColor.GREEN + "Je ontving Dieren eten x" + amount + ".");
+            target.sendMessage(ChatColor.GREEN + "Je ontving " + category.displayName() + " x" + amount + ".");
+        }
+    }
+
+    private int parseAmount(String raw) {
+        try {
+            return Math.max(1, Integer.parseInt(raw));
+        } catch (Exception ignored) {
+            return 1;
         }
     }
 
@@ -442,11 +480,21 @@ public class PetCommand implements BasicCommand {
 
         if (args[0].equalsIgnoreCase("givefood")) {
             if (args.length == 2) {
-                return Bukkit.getOnlinePlayers().stream().map(Player::getName).toList();
+                List<String> options = new ArrayList<>(foodManager.getCategoryKeys());
+                options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
+                return filter(options, args[1]);
             }
 
             if (args.length == 3) {
-                return List.of("1", "8", "16", "32", "64");
+                if (foodManager.getCategory(args[1]) != null) {
+                    return filter(List.of("1", "8", "16", "32", "64"), args[2]);
+                }
+
+                return filter(foodManager.getCategoryKeys(), args[2]);
+            }
+
+            if (args.length == 4 && foodManager.getCategory(args[2]) != null) {
+                return filter(List.of("1", "8", "16", "32", "64"), args[3]);
             }
         }
 
